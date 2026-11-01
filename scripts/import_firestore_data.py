@@ -125,7 +125,7 @@ def run_migration():
                 user = User(
                     id=uid,
                     email=email,
-                    display_name=u.get('displayName') or email.split('@')[0],
+                    display_name=(u.get('displayName') or email.split('@')[0])[:255],
                     photo_url=u.get('photoUrl') or '',
                     role=u.get('role', 'user'),
                     is_staff=bool(u.get('isStaff', False)),
@@ -179,7 +179,7 @@ def run_migration():
                     user = User(
                         id=user_id,
                         email=email,
-                        display_name=lic.get('userName') or email.split('@')[0],
+                        display_name=(lic.get('userName') or email.split('@')[0])[:255],
                         photo_url=lic.get('userPhoto') or ''
                     )
                     user.set_unusable_password()

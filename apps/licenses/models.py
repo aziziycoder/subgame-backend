@@ -18,7 +18,7 @@ class License(models.Model):
     # Snapshot metadata for high-speed queries without joins if needed
     user_email = models.EmailField(db_index=True)
     user_name = models.CharField(max_length=255, blank=True, default='')
-    user_photo = models.URLField(max_length=1000, blank=True, default='')
+    user_photo = models.TextField(blank=True, default='')
     game_title = models.CharField(max_length=255)
     game_slug = models.CharField(max_length=120, db_index=True)
     
