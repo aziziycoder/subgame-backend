@@ -98,3 +98,77 @@ class AdminUsersListView(views.APIView):
         users = User.objects.all().order_by('-created_at')
         serializer = UserSerializer(users, many=True)
         return Response(serializer.data)
+
+
+class AdminUserDetailView(views.APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, user_id):
+        if not request.user.is_admin:
+            return Response({'error': 'Ruxsat berilmagan.'}, status=status.HTTP_403_FORBIDDEN)
+        user = User.objects.filter(id=user_id).first()
+        if not user:
+            return Response({'error': 'Foydalanuvchi topilmadi.'}, status=status.HTTP_404_NOT_FOUND)
+        role = request.data.get('role')
+        if role in ['admin', 'user']:
+            user.role = role
+            user.is_staff = (role == 'admin')
+            user.save(update_fields=['role', 'is_staff'])
+            return Response({'success': True, 'user': UserSerializer(user).data})
+        return Response({'error': 'Noto‘g‘ri rol.'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminUsersWithLicensesView(views.APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not request.user.is_admin:
+            return Response({'error': 'Ruxsat berilmagan.'}, status=status.HTTP_403_FORBIDDEN)
+
+        from apps.licenses.models import License
+        from apps.licenses.serializers import LicenseSerializer
+
+        users = User.objects.all().order_by('-last_login_at', '-created_at')
+        licenses = License.objects.all().select_related('user')
+
+        lic_by_user = {}
+        total_bound = 0
+        for lic in licenses:
+            u_id = lic.user_id
+            if u_id not in lic_by_user:
+                lic_by_user[u_id] = []
+            lic_data = LicenseSerializer(lic).data
+            lic_by_user[u_id].append(lic_data)
+            if lic.hwid:
+                total_bound += 1
+
+        users_list = []
+        total_admins = 0
+        for u in users:
+            if u.is_admin:
+                total_admins += 1
+            u_lics = lic_by_user.get(u.id, [])
+            bound_count = sum(1 for l in u_lics if l.get('hwid'))
+            user_data = UserSerializer(u).data
+            user_data.update({
+                'licenses': u_lics,
+                'claimedGamesCount': len(u_lics),
+                'activeLicensesCount': sum(1 for l in u_lics if l.get('status') == 'active'),
+                'boundDevicesCount': bound_count,
+            })
+            users_list.append(user_data)
+
+        stats = {
+            'totalUsers': users.count(),
+            'totalAdmins': total_admins,
+            'totalLicenses': licenses.count(),
+            'totalBoundDevices': total_bound,
+            'orphanedLicensesCount': 0,
+            'rawLicensesCount': licenses.count(),
+        }
+
+        return Response({
+            'users': users_list,
+            'stats': stats,
+        })
+

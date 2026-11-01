@@ -42,7 +42,9 @@ class GameDetailView(generics.RetrieveAPIView):
 class SliderListView(generics.ListAPIView):
     serializer_class = SliderSerializer
     permission_classes = [permissions.AllowAny]
+    pagination_class = None
     queryset = Slider.objects.filter(is_active=True).order_by('order')
+
 
 
 class AdminGameCreateUpdateView(generics.CreateAPIView, generics.UpdateAPIView, generics.DestroyAPIView):
