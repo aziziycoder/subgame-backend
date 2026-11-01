@@ -263,14 +263,18 @@ def run_migration():
     orders_updated = 0
 
     with transaction.atomic():
-        for ord_data in data['orders']:
-            order_id = ord_data['orderId']
-            user_id = ord_data['userId']
-            email = ord_data['userEmail'].strip().lower()
-            game_id = ord_data['gameId']
+        for ord_data in data.get('orders', []):
+            order_id = ord_data.get('orderId') or ord_data.get('id')
+            if not order_id:
+                continue
+            user_id = ord_data.get('userId') or (order_id.split('__')[0] if '__' in order_id else '')
+            email = (ord_data.get('userEmail') or '').strip().lower()
+            game_id = ord_data.get('gameId') or ord_data.get('gameSlug') or (order_id.split('__')[1] if '__' in order_id else '')
 
-            user = user_by_id.get(user_id) or user_by_email.get(email) or existing_users.get(email)
+            user = user_by_id.get(user_id) or user_by_email.get(email) or existing_users.get(email) or existing_by_id.get(user_id)
             game = game_map.get(game_id)
+            if not game and game_id:
+                game = Game.objects.filter(id=game_id).first() or Game.objects.filter(slug=game_id).first()
 
             if not user or not game:
                 continue
