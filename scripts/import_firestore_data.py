@@ -95,6 +95,9 @@ def run_migration():
                 'is_featured': bool(g.get('isFeatured', False)),
                 'tags': g.get('tags') or [],
                 'default_exe_name': g.get('defaultExeName') or '',
+                'target_file_name': g.get('targetFileName') or '',
+                'target_relative_dir': g.get('targetRelativeDir') or '',
+                'key_prefix': g.get('keyPrefix') or '',
             }
 
             obj, _ = Game.objects.update_or_create(id=game_id, defaults=defaults)

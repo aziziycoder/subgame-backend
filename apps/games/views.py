@@ -53,6 +53,14 @@ class AdminGameCreateUpdateView(generics.CreateAPIView, generics.UpdateAPIView, 
     lookup_field = 'id'
     queryset = Game.objects.all()
 
+    def get_object(self):
+        id_or_slug = self.kwargs.get('id')
+        obj = Game.objects.filter(Q(id=id_or_slug) | Q(slug=id_or_slug)).first()
+        if not obj:
+            from rest_framework.exceptions import NotFound
+            raise NotFound('O‘yin topilmadi.')
+        return obj
+
     def check_permissions(self, request):
         super().check_permissions(request)
         if not request.user.is_admin:
