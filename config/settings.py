@@ -138,10 +138,12 @@ SIMPLE_JWT = {
 }
 
 # CORS Configuration
-CORS_ALLOW_ALL_ORIGINS = DEBUG  # Only allow all in local debug mode
+CORS_ALLOW_ALL_ORIGINS = True  # Allow public API consumption for web, launcher, preview domains
+CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     'https://subgame.uz',
     'https://www.subgame.uz',
+    'https://sub-game.vercel.app',
     'http://localhost:5173',
     'http://localhost:3000',
     'http://localhost:5174',
