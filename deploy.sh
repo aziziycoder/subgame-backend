@@ -31,7 +31,7 @@ docker compose up -d --build
 echo ">>> [4/5] Running migrations and initial setup..."
 docker compose exec -T web python manage.py migrate
 docker compose exec -T web python manage.py create_admin || true
-docker compose exec -T web python scripts/import_games_from_frontend.py || true
+docker compose exec -T web python scripts/import_firestore_data.py || true
 
 echo ">>> [5/5] SubGame Backend muvaffaqiyatli ishga tushdi!"
 docker compose ps
