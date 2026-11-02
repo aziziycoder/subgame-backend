@@ -160,6 +160,5 @@ GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '542403988321-729rhn6r3q82q1e8v
 
 ADMIN_EMAILS = [
     'azizbekgulomovweb@gmail.com',
-    'azizbekgulomovcoder@gmail.com',
     'imuz21029@gmail.com'
 ]
