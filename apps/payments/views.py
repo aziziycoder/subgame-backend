@@ -51,7 +51,10 @@ class CreateOrderView(views.APIView):
             raw_price = ''.join(c for c in (game.subtitle_price or game.price) if c.isdigit())
             amount = int(raw_price) if raw_price else 15000
 
-        order_id = f"{target_user.id}__{game.slug or game.id}"
+        # Click limits merchant_trans_id to 50 characters.
+        # User ID is 28 chars, so limit game slug to 18 chars (28 + 2 + 18 = 48 chars).
+        clean_slug = (game.slug or game.id)[:18]
+        order_id = f"{target_user.id}__{clean_slug}"
 
         order, _ = Order.objects.update_or_create(
             order_id=order_id,
@@ -123,8 +126,16 @@ class ClickWebhookView(views.APIView):
             if sign_string != expected_sign:
                 return Response({'error': -1, 'error_note': 'SIGN CHECK FAILED!'}, status=status.HTTP_200_OK)
 
-        # 2. Find Order
+        # 2. Find Order (handles exact match, startswith, and 50-char truncation)
         order = Order.objects.filter(order_id=merchant_trans_id).first()
+        if not order:
+            order = Order.objects.filter(order_id__startswith=merchant_trans_id).first()
+        if not order and '__' in merchant_trans_id:
+            user_part, game_part = merchant_trans_id.split('__', 1)
+            order = Order.objects.filter(user_id=user_part, game_slug__startswith=game_part).first()
+            if not order:
+                order = Order.objects.filter(user_id=user_part).order_by('-created_at').first()
+
         if not order:
             return Response({'error': -5, 'error_note': 'User or Order does not exist'}, status=status.HTTP_200_OK)
 
