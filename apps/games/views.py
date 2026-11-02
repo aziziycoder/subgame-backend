@@ -63,5 +63,12 @@ class AdminGameCreateUpdateView(generics.CreateAPIView, generics.UpdateAPIView, 
 
     def check_permissions(self, request):
         super().check_permissions(request)
-        if not request.user.is_admin:
+        from django.conf import settings
+        is_admin_user = (
+            request.user.is_admin or
+            request.user.role == 'admin' or
+            request.user.is_superuser or
+            (request.user.email and request.user.email.lower() in [e.lower() for e in settings.ADMIN_EMAILS])
+        )
+        if not is_admin_user:
             self.permission_denied(request, message='Faqat Admin o‘zgartira oladi.')
