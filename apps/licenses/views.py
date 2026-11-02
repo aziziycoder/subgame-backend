@@ -203,6 +203,76 @@ class AdminLicenseManageView(views.APIView):
         licenses = License.objects.all().order_by('-created_at')
         return Response(LicenseSerializer(licenses, many=True).data)
 
+    def post(self, request):
+        if not request.user.is_admin:
+            return Response({'error': 'Ruxsat berilmagan.'}, status=status.HTTP_403_FORBIDDEN)
+
+        user_id = request.data.get('userId')
+        game_id = request.data.get('gameId')
+        game_title = request.data.get('gameTitle', '')
+        game_slug = request.data.get('gameSlug', '')
+        payment_provider = request.data.get('paymentProvider', 'admin_grant')
+        paid_amount = request.data.get('paidAmount', 0)
+        user_email = request.data.get('userEmail', '')
+        user_name = request.data.get('userName', '')
+        user_photo = request.data.get('userPhoto', '')
+
+        if not user_id or not game_id:
+            return Response({'error': 'userId va gameId talab qilinadi.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.users.models import User
+        # 1. Resolve user
+        user = User.objects.filter(id=user_id).first()
+        if not user and user_email:
+            user = User.objects.filter(email=user_email.lower()).first()
+        if not user:
+            user = User.objects.create(
+                id=user_id,
+                email=user_email.lower() if user_email else f"{user_id}@subgame.uz",
+                display_name=user_name or (user_email.split('@')[0] if user_email else 'Foydalanuvchi'),
+                photo_url=user_photo or '',
+                role='user'
+            )
+
+        # 2. Resolve game
+        game = Game.objects.filter(id=game_id).first() or Game.objects.filter(slug=game_slug or game_id).first()
+        if not game:
+            game = Game.objects.create(
+                id=game_id,
+                slug=game_slug or game_id,
+                title=game_title or game_id,
+                cover='https://subgame.uz/favicon.ico'
+            )
+
+        license_id = f"{user.id}_{game.id}"
+        lic = License.objects.filter(id=license_id).first() or License.objects.filter(user=user, game=game).first()
+
+        if not lic:
+            lic = License.objects.create(
+                id=license_id,
+                user=user,
+                game=game,
+                user_email=user.email,
+                user_name=user.display_name,
+                user_photo=user.photo_url,
+                game_title=game_title or game.title,
+                game_slug=game_slug or game.slug,
+                status='active',
+                payment_provider=payment_provider,
+                paid_amount=paid_amount or 0
+            )
+        else:
+            lic.status = 'active'
+            lic.payment_provider = payment_provider
+            lic.paid_amount = paid_amount or 0
+            lic.save()
+
+        return Response({
+            'success': True,
+            'message': 'Litsenziya muvaffaqiyatli saqlandi.',
+            'license': LicenseSerializer(lic).data
+        })
+
     def delete(self, request, license_id):
         if not request.user.is_admin:
             return Response({'error': 'Ruxsat berilmagan.'}, status=status.HTTP_403_FORBIDDEN)
