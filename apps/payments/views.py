@@ -13,11 +13,32 @@ from .serializers import OrderSerializer
 
 
 class CreateOrderView(views.APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]
 
     def post(self, request):
         game_id = request.data.get('gameId') or request.data.get('gameSlug')
         custom_amount = request.data.get('amount')
+        user_id = request.data.get('userId')
+        user_email = request.data.get('userEmail')
+
+        # Determine user: authenticated session or via userId / userEmail
+        from apps.users.models import User
+        target_user = None
+        if request.user and request.user.is_authenticated:
+            target_user = request.user
+        elif user_id:
+            target_user = User.objects.filter(id=user_id).first()
+            if not target_user and user_email:
+                target_user = User.objects.filter(email=user_email).first()
+            if not target_user and user_email:
+                target_user = User.objects.create_user(
+                    email=user_email,
+                    id=user_id,
+                    display_name=user_email.split('@')[0]
+                )
+
+        if not target_user:
+            return Response({'error': 'Foydalanuvchi aniqlanmadi.'}, status=status.HTTP_400_BAD_REQUEST)
 
         game = Game.objects.filter(id=game_id).first() or Game.objects.filter(slug=game_id).first()
         if not game:
@@ -30,14 +51,14 @@ class CreateOrderView(views.APIView):
             raw_price = ''.join(c for c in (game.subtitle_price or game.price) if c.isdigit())
             amount = int(raw_price) if raw_price else 15000
 
-        order_id = f"{request.user.id}__{game.slug or game.id}"
+        order_id = f"{target_user.id}__{game.slug or game.id}"
 
         order, _ = Order.objects.update_or_create(
             order_id=order_id,
             defaults={
-                'user': request.user,
+                'user': target_user,
                 'game': game,
-                'user_email': request.user.email,
+                'user_email': target_user.email,
                 'game_title': game.title,
                 'game_slug': game.slug,
                 'amount': amount,
