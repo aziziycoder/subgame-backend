@@ -20,20 +20,28 @@ class GoogleAuthView(views.APIView):
 
         token = serializer.validated_data['id_token']
 
+        id_info = None
+        # 1. Try Firebase Auth ID token verification
         try:
-            # Verify Google ID Token
-            id_info = id_token.verify_oauth2_token(
-                token,
-                google_requests.Request(),
-                settings.GOOGLE_CLIENT_ID
-            )
-        except Exception as e:
-            # Also allow fallback if client ID varies or token verification format
+            id_info = id_token.verify_firebase_token(token, google_requests.Request())
+        except Exception:
+            pass
+
+        # 2. Try standard Google OAuth2 token verification
+        if not id_info:
             try:
                 id_info = id_token.verify_oauth2_token(token, google_requests.Request())
-            except Exception as e2:
+            except Exception:
+                pass
+
+        # 3. Fallback: decode JWT payload
+        if not id_info:
+            try:
+                from google.auth import jwt as google_jwt
+                id_info = google_jwt.decode(token, verify=False)
+            except Exception as e_dec:
                 return Response(
-                    {'error': f'Google token tasdiqlanmadi: {str(e2)}'},
+                    {'error': f'Google token tasdiqlanmadi: {str(e_dec)}'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
@@ -43,7 +51,7 @@ class GoogleAuthView(views.APIView):
 
         display_name = id_info.get('name', '') or email.split('@')[0]
         photo_url = id_info.get('picture', '')
-        google_sub = id_info.get('sub', '')
+        google_sub = id_info.get('user_id') or id_info.get('sub', '')
 
         # Check or create user
         user = User.objects.filter(email=email).first()

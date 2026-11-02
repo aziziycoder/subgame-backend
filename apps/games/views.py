@@ -61,6 +61,12 @@ class AdminGameCreateUpdateView(generics.CreateAPIView, generics.UpdateAPIView, 
             raise NotFound('O‘yin topilmadi.')
         return obj
 
+    def put(self, request, *args, **kwargs):
+        return self.partial_update(request, *args, **kwargs)
+
+    def patch(self, request, *args, **kwargs):
+        return self.partial_update(request, *args, **kwargs)
+
     def check_permissions(self, request):
         super().check_permissions(request)
         from django.conf import settings
