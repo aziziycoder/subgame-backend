@@ -1,4 +1,6 @@
 import hashlib
+import secrets
+import string
 import urllib.parse
 from django.conf import settings
 from django.db import transaction
@@ -10,6 +12,23 @@ from apps.games.models import Game
 from apps.licenses.models import License
 from .models import Order
 from .serializers import OrderSerializer
+
+ORDER_ID_ALPHABET = string.ascii_uppercase + string.digits
+ORDER_ID_LENGTH = 20
+
+
+def click_price(game):
+    """Price in so'm with the same precedence as the site, or None when the game is free."""
+    for value in (game.subtitle_price, game.price):
+        digits = ''.join(c for c in (value or '') if c.isdigit())
+        if digits and int(digits) > 0:
+            return int(digits)
+    return 15000 if game.is_paid else None
+
+
+def generate_order_id():
+    """Random id sent to Click as merchant_trans_id; it carries no user or game data."""
+    return ''.join(secrets.choice(ORDER_ID_ALPHABET) for _ in range(ORDER_ID_LENGTH))
 
 
 class CreateOrderView(views.APIView):
@@ -23,14 +42,22 @@ class CreateOrderView(views.APIView):
         if not game:
             return Response({'error': 'O‘yin topilmadi.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # The price always comes from the game record, never from the client.
-        raw_price = ''.join(c for c in (game.subtitle_price or game.price) if c.isdigit())
-        amount = int(raw_price) if raw_price else 15000
+        if not settings.CLICK_SERVICE_ID or not settings.CLICK_MERCHANT_ID:
+            return Response({'error': 'Click to‘lovi hozircha sozlanmagan.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-        # Click limits merchant_trans_id to 50 characters.
-        # User ID is 28 chars, so limit game slug to 18 chars (28 + 2 + 18 = 48 chars).
-        clean_slug = (game.slug or game.id)[:18]
-        order_id = f"{target_user.id}__{clean_slug}"
+        if License.objects.filter(user=target_user, game=game, status='active').exists():
+            return Response({'error': 'Bu o‘yin uchun sizda faol litsenziya bor.'}, status=status.HTTP_409_CONFLICT)
+
+        # The price always comes from the game record, never from the client.
+        amount = click_price(game)
+        if amount is None:
+            return Response({'error': 'Bu o‘yin bepul, to‘lov talab qilinmaydi.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Retrying a checkout keeps its unpaid order. Orders in the old {user}__{slug} format are left alone.
+        existing_order = Order.objects.filter(user=target_user, game=game).exclude(status='paid').exclude(
+            order_id__contains='__'
+        ).order_by('-created_at').first()
+        order_id = existing_order.order_id if existing_order else generate_order_id()
 
         order, _ = Order.objects.update_or_create(
             order_id=order_id,
@@ -87,9 +114,17 @@ class ClickWebhookView(views.APIView):
         service_id = str(data.get('service_id', ''))
         click_paydoc_id = str(data.get('click_paydoc_id', ''))
         merchant_trans_id = str(data.get('merchant_trans_id', ''))
-        amount = float(data.get('amount', 0))
-        action = int(data.get('action', -1))
-        error = int(data.get('error', 0))
+        try:
+            amount = float(data.get('amount', 0))
+            action = int(data.get('action', -1))
+            error = int(data.get('error', 0))
+        except (TypeError, ValueError):
+            return Response({'error': -8, 'error_note': 'Error in request from click'}, status=status.HTTP_200_OK)
+        if action == -1:
+            if request.path.rstrip('/').endswith('prepare'):
+                action = 0
+            elif request.path.rstrip('/').endswith('complete'):
+                action = 1
         error_note = str(data.get('error_note', ''))
         sign_time = str(data.get('sign_time', ''))
         sign_string = str(data.get('sign_string', '')).lower()
@@ -113,15 +148,8 @@ class ClickWebhookView(views.APIView):
         if sign_string != expected_sign:
             return Response({'error': -1, 'error_note': 'SIGN CHECK FAILED!'}, status=status.HTTP_200_OK)
 
-        # 2. Find Order (handles exact match, startswith, and 50-char truncation)
+        # 2. Find Order. Matching is exact, so an altered id fails at Prepare, before any money moves.
         order = Order.objects.filter(order_id=merchant_trans_id).first()
-        if not order:
-            order = Order.objects.filter(order_id__startswith=merchant_trans_id).first()
-        if not order and '__' in merchant_trans_id:
-            user_part, game_part = merchant_trans_id.split('__', 1)
-            order = Order.objects.filter(user_id=user_part, game_slug__startswith=game_part).first()
-            if not order:
-                order = Order.objects.filter(user_id=user_part).order_by('-created_at').first()
 
         if not order:
             return Response({'error': -5, 'error_note': 'User or Order does not exist'}, status=status.HTTP_200_OK)
@@ -149,6 +177,18 @@ class ClickWebhookView(views.APIView):
 
         # 4. Action 1: COMPLETE
         if action == 1:
+            if order.status == 'paid':
+                # A retry of the completed transaction must not fail; anything else is a second payment.
+                if order.click_trans_id != click_trans_id:
+                    return Response({'error': -4, 'error_note': 'Already paid'}, status=status.HTTP_200_OK)
+                return Response({
+                    'click_trans_id': int(click_trans_id) if click_trans_id.isdigit() else click_trans_id,
+                    'merchant_trans_id': merchant_trans_id,
+                    'merchant_confirm_id': click_trans_id,
+                    'error': 0,
+                    'error_note': 'Success'
+                }, status=status.HTTP_200_OK)
+
             if error < 0:
                 order.status = 'cancelled'
                 order.error_note = error_note
@@ -163,7 +203,9 @@ class ClickWebhookView(views.APIView):
                 order.save(update_fields=['status', 'paid_amount', 'click_trans_id', 'click_paydoc_id', 'updated_at'])
 
                 # Automatically grant or update license!
-                license_id = f"{order.user.id}_{order.game.id}"
+                # Imported licenses may have another id format, and user+game is unique.
+                existing_license = License.objects.filter(user=order.user, game=order.game).first()
+                license_id = existing_license.id if existing_license else f"{order.user.id}_{order.game.id}"
                 License.objects.update_or_create(
                     id=license_id,
                     defaults={
