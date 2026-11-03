@@ -30,12 +30,12 @@ Needs Firestore read quota. Re-running later would overwrite HWID resets made in
 node scripts/export_firestore_all.mjs
 ```
 
-Copy `data/firestore_full_export.json` to the server, then:
+Copy `data/firestore_full_export.json` to `/var/www/subgame-backend/data/` on the server, then in `/var/www/subgame-backend` with the virtualenv active:
 
 ```bash
-docker compose exec web python scripts/import_firestore_data.py
-docker compose exec web python manage.py rehost_firebase_files --dry-run
-docker compose exec web python manage.py rehost_firebase_files
+python scripts/import_firestore_data.py
+python manage.py rehost_firebase_files --dry-run
+python manage.py rehost_firebase_files
 ```
 
 For licenses, Firestore wins on HWID, because the launcher only ever wrote there. Games are replaced only
@@ -45,8 +45,6 @@ when the Firestore copy is newer. The import prints how many user+game pairs had
 
 1. Bump `version` in `SubGame-Launcher/package.json`, build and publish it.
 2. Update `public/downloads/version.json` on the site.
-3. **Also update the Firestore document `appConfig/launcher`.** Installed launchers read it before
-   `version.json`, so without this they never learn about the update.
 
 The update is mandatory. Users sign in again once, because old sessions have no JWT.
 
