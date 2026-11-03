@@ -15,6 +15,7 @@ from .serializers import OrderSerializer
 
 ORDER_ID_ALPHABET = string.ascii_uppercase + string.digits
 ORDER_ID_LENGTH = 20
+MAX_CLICK_INT = 2_147_483_647
 
 
 def click_price(game):
@@ -165,12 +166,13 @@ class ClickWebhookView(views.APIView):
             order.status = 'prepared'
             order.click_trans_id = click_trans_id
             order.click_paydoc_id = click_paydoc_id
-            order.save(update_fields=['status', 'click_trans_id', 'click_paydoc_id', 'updated_at'])
+            order.click_prepare_id = order.click_prepare_id or secrets.randbelow(MAX_CLICK_INT) + 1
+            order.save(update_fields=['status', 'click_trans_id', 'click_paydoc_id', 'click_prepare_id', 'updated_at'])
 
             return Response({
                 'click_trans_id': int(click_trans_id) if click_trans_id.isdigit() else click_trans_id,
                 'merchant_trans_id': merchant_trans_id,
-                'merchant_prepare_id': merchant_trans_id,
+                'merchant_prepare_id': order.click_prepare_id,
                 'error': 0,
                 'error_note': 'Success'
             }, status=status.HTTP_200_OK)
@@ -184,10 +186,16 @@ class ClickWebhookView(views.APIView):
                 return Response({
                     'click_trans_id': int(click_trans_id) if click_trans_id.isdigit() else click_trans_id,
                     'merchant_trans_id': merchant_trans_id,
-                    'merchant_confirm_id': click_trans_id,
+                    'merchant_confirm_id': order.click_prepare_id,
                     'error': 0,
                     'error_note': 'Success'
                 }, status=status.HTTP_200_OK)
+
+            if str(order.click_prepare_id) != merchant_prepare_id:
+                return Response({'error': -6, 'error_note': 'Transaction does not exist'}, status=status.HTTP_200_OK)
+
+            if order.status == 'cancelled':
+                return Response({'error': -9, 'error_note': 'Transaction cancelled'}, status=status.HTTP_200_OK)
 
             if error < 0:
                 order.status = 'cancelled'
@@ -226,7 +234,7 @@ class ClickWebhookView(views.APIView):
             return Response({
                 'click_trans_id': int(click_trans_id) if click_trans_id.isdigit() else click_trans_id,
                 'merchant_trans_id': merchant_trans_id,
-                'merchant_confirm_id': click_trans_id,
+                'merchant_confirm_id': order.click_prepare_id,
                 'error': 0,
                 'error_note': 'Success'
             }, status=status.HTTP_200_OK)

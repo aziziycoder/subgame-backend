@@ -11,16 +11,17 @@ from .models import Order
 
 SECRET = 'test-secret'
 ORDER_ID = 'uid__stray'
+PREPARE_ID = 12345
 
 
 def complete_payload(amount, sign_string=None):
     payload = {
         'click_trans_id': '1', 'service_id': '2', 'click_paydoc_id': '3',
-        'merchant_trans_id': ORDER_ID, 'merchant_prepare_id': ORDER_ID,
+        'merchant_trans_id': ORDER_ID, 'merchant_prepare_id': PREPARE_ID,
         'amount': amount, 'action': 1, 'error': 0, 'error_note': '', 'sign_time': 't',
     }
     payload['sign_string'] = sign_string or hashlib.md5(
-        f"12{SECRET}{ORDER_ID}{ORDER_ID}{amount}1t".encode('utf-8')
+        f"12{SECRET}{ORDER_ID}{PREPARE_ID}{amount}1t".encode('utf-8')
     ).hexdigest()
     return payload
 
@@ -32,7 +33,7 @@ class ClickWebhookTests(APITestCase):
         self.game = Game.objects.create(id='stray', slug='stray', title='Stray', cover='https://x/y.jpg', subtitle_price='15 000 so‘m')
         Order.objects.create(
             order_id=ORDER_ID, user=self.user, game=self.game, user_email=self.user.email,
-            game_title='Stray', game_slug='stray', amount=15000,
+            game_title='Stray', game_slug='stray', amount=15000, click_prepare_id=PREPARE_ID,
         )
 
     def post(self, payload):
@@ -81,7 +82,7 @@ class ClickWebhookTests(APITestCase):
 
         other = complete_payload('15000')
         other['click_trans_id'] = '9'
-        other['sign_string'] = hashlib.md5(f"92{SECRET}{ORDER_ID}{ORDER_ID}150001t".encode('utf-8')).hexdigest()
+        other['sign_string'] = hashlib.md5(f"92{SECRET}{ORDER_ID}{PREPARE_ID}150001t".encode('utf-8')).hexdigest()
         self.assertEqual(self.post(other).data['error'], -4)
 
     def test_cancel_notice_cannot_undo_a_paid_order(self):
@@ -89,7 +90,7 @@ class ClickWebhookTests(APITestCase):
         cancel = complete_payload('15000')
         cancel['error'] = -5017
         cancel['click_trans_id'] = '9'
-        cancel['sign_string'] = hashlib.md5(f"92{SECRET}{ORDER_ID}{ORDER_ID}150001t".encode('utf-8')).hexdigest()
+        cancel['sign_string'] = hashlib.md5(f"92{SECRET}{ORDER_ID}{PREPARE_ID}150001t".encode('utf-8')).hexdigest()
         self.post(cancel)
         self.assertEqual(Order.objects.get(order_id=ORDER_ID).status, 'paid')
 
@@ -107,6 +108,58 @@ class ClickWebhookTests(APITestCase):
             payload['merchant_trans_id'] = payload['merchant_prepare_id'] = altered
             payload['sign_string'] = hashlib.md5(f"12{SECRET}{altered}{altered}150001t".encode('utf-8')).hexdigest()
             self.assertEqual(self.post(payload).data['error'], -5)
+        self.assertFalse(License.objects.exists())
+
+    def prepare_payload(self):
+        payload = {
+            'click_trans_id': '5397953850', 'service_id': '2', 'click_paydoc_id': '3',
+            'merchant_trans_id': ORDER_ID, 'amount': '15000.00', 'action': 0,
+            'error': 0, 'error_note': '', 'sign_time': 't',
+        }
+        payload['sign_string'] = hashlib.md5(
+            f"53979538502{SECRET}{ORDER_ID}15000.000t".encode('utf-8')
+        ).hexdigest()
+        return payload
+
+    def test_prepare_and_complete_return_integer_ids_as_click_requires(self):
+        Order.objects.filter(order_id=ORDER_ID).update(click_prepare_id=None)
+
+        prepared = self.client.post('/api/click/prepare', self.prepare_payload()).data
+        self.assertEqual(prepared['error'], 0)
+        self.assertIsInstance(prepared['merchant_prepare_id'], int)
+        self.assertLessEqual(prepared['merchant_prepare_id'], 2_147_483_647)
+
+        prepare_id = prepared['merchant_prepare_id']
+        complete = {
+            'click_trans_id': '5397953850', 'service_id': '2', 'click_paydoc_id': '3',
+            'merchant_trans_id': ORDER_ID, 'merchant_prepare_id': prepare_id, 'amount': '15000.00',
+            'action': 1, 'error': 0, 'error_note': '', 'sign_time': 't',
+        }
+        complete['sign_string'] = hashlib.md5(
+            f"53979538502{SECRET}{ORDER_ID}{prepare_id}15000.001t".encode('utf-8')
+        ).hexdigest()
+        completed = self.client.post('/api/click/complete', complete).data
+        self.assertEqual(completed['error'], 0)
+        self.assertIsInstance(completed['merchant_confirm_id'], int)
+        self.assertTrue(License.objects.filter(user=self.user, game=self.game, status='active').exists())
+
+        self.assertEqual(self.client.post('/api/click/complete', complete).data['error'], 0)
+
+    def test_retried_prepare_keeps_the_same_prepare_id(self):
+        first = self.client.post('/api/click/prepare', self.prepare_payload()).data
+        second = self.client.post('/api/click/prepare', self.prepare_payload()).data
+        self.assertEqual(first['merchant_prepare_id'], second['merchant_prepare_id'])
+
+    def test_complete_with_unknown_prepare_id_is_rejected(self):
+        payload = complete_payload('15000')
+        payload['merchant_prepare_id'] = 999
+        payload['sign_string'] = hashlib.md5(f"12{SECRET}{ORDER_ID}999150001t".encode('utf-8')).hexdigest()
+        self.assertEqual(self.post(payload).data['error'], -6)
+        self.assertFalse(License.objects.exists())
+
+    def test_complete_after_cancellation_is_rejected(self):
+        Order.objects.filter(order_id=ORDER_ID).update(status='cancelled')
+        self.assertEqual(self.post(complete_payload('15000')).data['error'], -9)
         self.assertFalse(License.objects.exists())
 
     def test_malformed_amount_does_not_crash(self):

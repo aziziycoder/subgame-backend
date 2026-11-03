@@ -27,6 +27,8 @@ class Order(models.Model):
     payment_provider = models.CharField(max_length=50, default='click')
     click_trans_id = models.CharField(max_length=100, blank=True, default='')
     click_paydoc_id = models.CharField(max_length=100, blank=True, default='')
+    # Click requires merchant_prepare_id and merchant_confirm_id to be integers.
+    click_prepare_id = models.IntegerField(null=True, blank=True)
     paid_amount = models.IntegerField(default=0)
     error_note = models.TextField(blank=True, default='')
     
