@@ -1,5 +1,8 @@
-import random
+import re
+import secrets
 from datetime import timedelta
+from django.db import transaction
+from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework import views, status, permissions
 from rest_framework.response import Response
@@ -9,11 +12,16 @@ from .models import License, DeviceSession
 from .serializers import LicenseSerializer, DeviceSessionSerializer
 
 
+# SHA-256 hex digest produced by the launcher; rejects placeholders such as LOCAL_HWID.
+HWID_PATTERN = re.compile(r'^[A-F0-9]{64}$')
+
+
 class MyLicensesView(views.APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        licenses = License.objects.filter(user=request.user, status='active')
+        # Revoked licenses are included so the site can show their state; clients check `status`.
+        licenses = License.objects.filter(user=request.user)
         serializer = LicenseSerializer(licenses, many=True)
         # Return as dictionary key-value {gameId: license} for instant frontend/launcher lookup
         license_map = {lic['gameId']: lic for lic in serializer.data}
@@ -81,44 +89,71 @@ class BindHwidView(views.APIView):
         if not game_id or not hwid:
             return Response({'error': 'gameId va hwid kiritilishi shart.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        if not HWID_PATTERN.match(str(hwid)):
+            return Response({'error': 'Qurilma identifikatori noto‘g‘ri.'}, status=status.HTTP_400_BAD_REQUEST)
+
         # Allow admin bypass
         if request.user.is_admin:
             return Response({'success': True, 'message': 'Admin VIP ruxsati.'})
 
-        license_id = f"{request.user.id}_{game_id}"
-        license_obj = License.objects.filter(id=license_id, status='active').first()
-        if not license_obj:
-            # Try searching by game slug
-            license_obj = License.objects.filter(user=request.user, game__slug=game_id, status='active').first()
+        with transaction.atomic():
+            license_obj = License.objects.select_for_update().filter(
+                Q(game_id=game_id) | Q(game__slug=game_id),
+                user=request.user,
+                status='active',
+            ).first()
 
-        if not license_obj:
-            return Response({'error': 'Ushbu o‘yin uchun faol litsenziya topilmadi.'}, status=status.HTTP_404_NOT_FOUND)
+            if not license_obj:
+                return Response({'error': 'Ushbu o‘yin uchun faol litsenziya topilmadi.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # 1. If not yet bound -> bind to this machine
-        if not license_obj.hwid:
-            license_obj.hwid = hwid
-            license_obj.bound_at = timezone.now()
-            license_obj.bound_device_name = device_name
-            license_obj.save(update_fields=['hwid', 'bound_at', 'bound_device_name', 'updated_at'])
-            return Response({
-                'success': True,
-                'message': 'Litsenziya ushbu kompyuterga muvaffaqiyatli bog‘landi.',
-                'boundDeviceName': device_name
-            })
+            # 1. If not yet bound -> bind to this machine
+            if not license_obj.hwid:
+                license_obj.hwid = hwid
+                license_obj.bound_at = timezone.now()
+                license_obj.bound_device_name = device_name
+                license_obj.save(update_fields=['hwid', 'bound_at', 'bound_device_name', 'updated_at'])
+                return Response({
+                    'success': True,
+                    'message': 'Litsenziya ushbu kompyuterga muvaffaqiyatli bog‘landi.',
+                    'boundDeviceName': device_name,
+                    'license': LicenseSerializer(license_obj).data,
+                })
 
         # 2. If already bound -> verify matching HWID
         if license_obj.hwid == hwid:
             return Response({
                 'success': True,
                 'message': 'Litsenziya tasdiqlandi.',
-                'boundDeviceName': license_obj.bound_device_name
+                'boundDeviceName': license_obj.bound_device_name,
+                'license': LicenseSerializer(license_obj).data,
             })
 
         # 3. Mismatch -> Blocked!
         return Response({
             'error': f'Ushbu o‘yin litsenziyasi boshqa kompyuterga ({license_obj.bound_device_name or "boshqa PC"}) bog‘langan.',
-            'isBoundToAnotherDevice': True
+            'isBoundToAnotherDevice': True,
+            'boundDeviceName': license_obj.bound_device_name,
         }, status=status.HTTP_403_FORBIDDEN)
+
+
+class GameLicenseStatsView(views.APIView):
+    """Public per-game license counters, keyed by both game id and slug."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        rows = License.objects.filter(status='active').values('game_id', 'game_slug').annotate(
+            total=Count('id'),
+            bound=Count('id', filter=Q(hwid__isnull=False) & ~Q(hwid='')),
+        )
+        stats = {}
+        for row in rows:
+            for key in {row['game_id'], row['game_slug']}:
+                if not key:
+                    continue
+                entry = stats.setdefault(key, {'total': 0, 'bound': 0})
+                entry['total'] += row['total']
+                entry['bound'] += row['bound']
+        return Response(stats)
 
 
 # Device Session (6-digit Pairing Code) for Web <-> Launcher
@@ -132,12 +167,13 @@ class CreateDeviceSessionView(views.APIView):
 
         # Generate unique 6-digit code
         for _ in range(10):
-            code = f"{random.randint(100000, 999999)}"
+            code = f"{secrets.randbelow(900000) + 100000}"
             if not DeviceSession.objects.filter(session_id=code, status='pending').exists():
                 break
 
         session = DeviceSession.objects.create(
             session_id=code,
+            poll_token=secrets.token_urlsafe(32),
             device_id=device_id,
             device_name=device_name,
             hwid=hwid,
@@ -148,6 +184,7 @@ class CreateDeviceSessionView(views.APIView):
         return Response({
             'sessionId': session.session_id,
             'code': session.session_id,
+            'pollToken': session.poll_token,
             'expiresAt': session.expires_at.isoformat()
         })
 
@@ -172,12 +209,21 @@ class ApproveDeviceSessionView(views.APIView):
 class PollDeviceSessionView(views.APIView):
     permission_classes = [permissions.AllowAny]
 
-    def get(self, request, session_id):
+    def post(self, request, session_id):
         session = DeviceSession.objects.filter(session_id=session_id).first()
-        if not session:
+        poll_token = str(request.data.get('pollToken', ''))
+        if not session or not session.poll_token or not secrets.compare_digest(session.poll_token, poll_token):
             return Response({'status': 'not_found'}, status=status.HTTP_404_NOT_FOUND)
 
+        if session.status == 'pending' and session.expires_at < timezone.now():
+            return Response({'status': 'expired'})
+
         if session.status == 'approved' and session.user:
+            # Tokens are handed out exactly once.
+            claimed = DeviceSession.objects.filter(session_id=session_id, status='approved').update(status='consumed')
+            if not claimed:
+                return Response({'status': 'consumed'})
+
             from rest_framework_simplejwt.tokens import RefreshToken
             refresh = RefreshToken.for_user(session.user)
             from apps.users.serializers import UserSerializer
@@ -216,6 +262,8 @@ class AdminLicenseManageView(views.APIView):
         user_email = request.data.get('userEmail', '')
         user_name = request.data.get('userName', '')
         user_photo = request.data.get('userPhoto', '')
+        admin_note = request.data.get('adminNote', '')
+        granted_by = request.data.get('grantedBy', '')
 
         if not user_id or not game_id:
             return Response({'error': 'userId va gameId talab qilinadi.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -259,12 +307,21 @@ class AdminLicenseManageView(views.APIView):
                 game_slug=game_slug or game.slug,
                 status='active',
                 payment_provider=payment_provider,
-                paid_amount=paid_amount or 0
+                paid_amount=paid_amount or 0,
+                admin_note=admin_note,
+                granted_by=granted_by
+            )
+        elif lic.status == 'active':
+            return Response(
+                {'error': f'Ushbu foydalanuvchida "{lic.game_title}" o‘yini uchun allaqachon faol litsenziya mavjud!'},
+                status=status.HTTP_409_CONFLICT
             )
         else:
             lic.status = 'active'
             lic.payment_provider = payment_provider
             lic.paid_amount = paid_amount or 0
+            lic.admin_note = admin_note
+            lic.granted_by = granted_by
             lic.save()
 
         return Response({

@@ -1,7 +1,8 @@
 from django.urls import path
-from .views import CreateOrderView, ClickWebhookView
+from .views import AdminOrderListView, CreateOrderView, ClickWebhookView
 
 urlpatterns = [
+    path('admin/orders/', AdminOrderListView.as_view(), name='admin-orders'),
     path('order/create/', CreateOrderView.as_view(), name='order-create'),
     path('click/', ClickWebhookView.as_view(), name='click-webhook'),
     path('click/prepare/', ClickWebhookView.as_view(), name='click-prepare'),

@@ -113,6 +113,7 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+PUBLIC_API_URL = os.getenv('PUBLIC_API_URL', 'https://api.subgame.uz')
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -156,7 +157,9 @@ CLICK_SECRET_KEY = os.getenv('CLICK_SECRET_KEY', '')
 CLICK_MERCHANT_USER_ID = os.getenv('CLICK_MERCHANT_USER_ID', '')
 
 # Google OAuth Web Client ID for token verification
-GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '542403988321-729rhn6r3q82q1e8v00k23mrg3479b4p.apps.googleusercontent.com')
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '542403988321-67fapm1qe6oqih3rvl8obu9hqpacuf4v.apps.googleusercontent.com')
+
+FIREBASE_PROJECT_ID = os.getenv('FIREBASE_PROJECT_ID', 'subgame-ca4ed')
 
 ADMIN_EMAILS = [
     'azizbekgulomovweb@gmail.com',

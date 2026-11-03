@@ -34,6 +34,8 @@ class License(models.Model):
     payment_ref = models.CharField(max_length=100, blank=True, default='')
     paid_amount = models.IntegerField(default=0)
     revoked_reason = models.TextField(blank=True, default='')
+    admin_note = models.TextField(blank=True, default='')
+    granted_by = models.CharField(max_length=255, blank=True, default='')
     
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
@@ -52,9 +54,12 @@ class DeviceSession(models.Model):
         ('pending', 'Kutilmoqda'),
         ('approved', 'Tasdiqlangan'),
         ('expired', 'Muddati o‘tgan'),
+        ('consumed', 'Ishlatilgan'),
     )
 
     session_id = models.CharField(max_length=32, primary_key=True)  # 6-digit code or uuid
+    # Known only to the launcher that created the session; the short code alone must not yield JWTs.
+    poll_token = models.CharField(max_length=64, blank=True, default='')
     device_id = models.CharField(max_length=128)
     device_name = models.CharField(max_length=128, blank=True, default='')
     hwid = models.CharField(max_length=128, blank=True, default='')

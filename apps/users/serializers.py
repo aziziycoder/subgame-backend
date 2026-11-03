@@ -21,5 +21,11 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class GoogleAuthSerializer(serializers.Serializer):
-    id_token = serializers.CharField(required=True)
+    id_token = serializers.CharField(required=False)
+    access_token = serializers.CharField(required=False)
+
+    def validate(self, attrs):
+        if not attrs.get('id_token') and not attrs.get('access_token'):
+            raise serializers.ValidationError('id_token yoki access_token kiritilishi shart.')
+        return attrs
 

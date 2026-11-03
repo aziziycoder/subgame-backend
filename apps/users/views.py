@@ -1,3 +1,4 @@
+import requests as http_requests
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import status, views, permissions
@@ -10,6 +11,49 @@ from .models import User
 from .serializers import UserSerializer, GoogleAuthSerializer
 
 
+def _identity_from_id_token(token):
+    """Returns verified claims, or None. Audience is always checked: without it
+    a token issued for any other Google client or Firebase project would pass."""
+    transport = google_requests.Request()
+    verifiers = (
+        (id_token.verify_oauth2_token, settings.GOOGLE_CLIENT_ID),
+        # Transition only: remove once no site bundle signs in through Firebase Auth.
+        (id_token.verify_firebase_token, settings.FIREBASE_PROJECT_ID),
+    )
+    for verify, audience in verifiers:
+        try:
+            return verify(token, transport, audience=audience)
+        except Exception:
+            continue
+    return None
+
+
+def _identity_from_access_token(token):
+    """Validates a Google Identity Services access token issued to our own client."""
+    try:
+        token_info = http_requests.get(
+            'https://oauth2.googleapis.com/tokeninfo',
+            params={'access_token': token},
+            timeout=10,
+        )
+        if token_info.status_code != 200:
+            return None
+        claims = token_info.json()
+        if claims.get('aud') != settings.GOOGLE_CLIENT_ID:
+            return None
+
+        profile = http_requests.get(
+            'https://openidconnect.googleapis.com/v1/userinfo',
+            headers={'Authorization': f'Bearer {token}'},
+            timeout=10,
+        )
+        if profile.status_code == 200:
+            claims = {**profile.json(), **claims}
+        return claims
+    except (http_requests.RequestException, ValueError):
+        return None
+
+
 class GoogleAuthView(views.APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -18,36 +62,21 @@ class GoogleAuthView(views.APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        token = serializer.validated_data['id_token']
+        access_token = serializer.validated_data.get('access_token')
+        if access_token:
+            id_info = _identity_from_access_token(access_token)
+        else:
+            id_info = _identity_from_id_token(serializer.validated_data['id_token'])
 
-        id_info = None
-        # 1. Try Firebase Auth ID token verification
-        try:
-            id_info = id_token.verify_firebase_token(token, google_requests.Request())
-        except Exception:
-            pass
-
-        # 2. Try standard Google OAuth2 token verification
         if not id_info:
-            try:
-                id_info = id_token.verify_oauth2_token(token, google_requests.Request())
-            except Exception:
-                pass
-
-        # 3. Fallback: decode JWT payload
-        if not id_info:
-            try:
-                from google.auth import jwt as google_jwt
-                id_info = google_jwt.decode(token, verify=False)
-            except Exception as e_dec:
-                return Response(
-                    {'error': f'Google token tasdiqlanmadi: {str(e_dec)}'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+            return Response({'error': 'Google token tasdiqlanmadi.'}, status=status.HTTP_401_UNAUTHORIZED)
 
         email = id_info.get('email', '').lower()
         if not email:
             return Response({'error': 'Google hisobida email topilmadi.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if str(id_info.get('email_verified', '')).lower() != 'true':
+            return Response({'error': 'Google hisobidagi email tasdiqlanmagan.'}, status=status.HTTP_401_UNAUTHORIZED)
 
         display_name = id_info.get('name', '') or email.split('@')[0]
         photo_url = id_info.get('picture', '')

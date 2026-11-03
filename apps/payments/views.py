@@ -13,43 +13,19 @@ from .serializers import OrderSerializer
 
 
 class CreateOrderView(views.APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         game_id = request.data.get('gameId') or request.data.get('gameSlug')
-        custom_amount = request.data.get('amount')
-        user_id = request.data.get('userId')
-        user_email = request.data.get('userEmail')
-
-        # Determine user: authenticated session or via userId / userEmail
-        from apps.users.models import User
-        target_user = None
-        if request.user and request.user.is_authenticated:
-            target_user = request.user
-        elif user_id:
-            target_user = User.objects.filter(id=user_id).first()
-            if not target_user and user_email:
-                target_user = User.objects.filter(email=user_email).first()
-            if not target_user and user_email:
-                target_user = User.objects.create_user(
-                    email=user_email,
-                    id=user_id,
-                    display_name=user_email.split('@')[0]
-                )
-
-        if not target_user:
-            return Response({'error': 'Foydalanuvchi aniqlanmadi.'}, status=status.HTTP_400_BAD_REQUEST)
+        target_user = request.user
 
         game = Game.objects.filter(id=game_id).first() or Game.objects.filter(slug=game_id).first()
         if not game:
             return Response({'error': 'O‘yin topilmadi.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # Parse numeric amount
-        if custom_amount:
-            amount = int(custom_amount)
-        else:
-            raw_price = ''.join(c for c in (game.subtitle_price or game.price) if c.isdigit())
-            amount = int(raw_price) if raw_price else 15000
+        # The price always comes from the game record, never from the client.
+        raw_price = ''.join(c for c in (game.subtitle_price or game.price) if c.isdigit())
+        amount = int(raw_price) if raw_price else 15000
 
         # Click limits merchant_trans_id to 50 characters.
         # User ID is 28 chars, so limit game slug to 18 chars (28 + 2 + 18 = 48 chars).
@@ -85,8 +61,17 @@ class CreateOrderView(views.APIView):
             'orderId': order.order_id,
             'amount': amount,
             'clickUrl': click_url,
-            'isSandbox': not bool(settings.CLICK_SECRET_KEY)
+            'isSandbox': False
         })
+
+
+class AdminOrderListView(views.APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not request.user.is_admin:
+            return Response({'error': 'Ruxsat berilmagan.'}, status=status.HTTP_403_FORBIDDEN)
+        return Response(OrderSerializer(Order.objects.all(), many=True).data)
 
 
 class ClickWebhookView(views.APIView):
@@ -112,19 +97,21 @@ class ClickWebhookView(views.APIView):
 
         # 1. Signature Verification
         secret = settings.CLICK_SECRET_KEY
-        if secret and sign_string != 'sandbox_bypass':
-            raw_amt_str = str(data.get('amount', ''))
-            if action == 0:
-                expected_sign = hashlib.md5(
-                    f"{click_trans_id}{service_id}{secret}{merchant_trans_id}{raw_amt_str}{action}{sign_time}".encode('utf-8')
-                ).hexdigest().lower()
-            else:
-                expected_sign = hashlib.md5(
-                    f"{click_trans_id}{service_id}{secret}{merchant_trans_id}{merchant_prepare_id}{raw_amt_str}{action}{sign_time}".encode('utf-8')
-                ).hexdigest().lower()
+        if not secret:
+            return Response({'error': -1, 'error_note': 'SIGN CHECK FAILED!'}, status=status.HTTP_200_OK)
 
-            if sign_string != expected_sign:
-                return Response({'error': -1, 'error_note': 'SIGN CHECK FAILED!'}, status=status.HTTP_200_OK)
+        raw_amt_str = str(data.get('amount', ''))
+        if action == 0:
+            expected_sign = hashlib.md5(
+                f"{click_trans_id}{service_id}{secret}{merchant_trans_id}{raw_amt_str}{action}{sign_time}".encode('utf-8')
+            ).hexdigest().lower()
+        else:
+            expected_sign = hashlib.md5(
+                f"{click_trans_id}{service_id}{secret}{merchant_trans_id}{merchant_prepare_id}{raw_amt_str}{action}{sign_time}".encode('utf-8')
+            ).hexdigest().lower()
+
+        if sign_string != expected_sign:
+            return Response({'error': -1, 'error_note': 'SIGN CHECK FAILED!'}, status=status.HTTP_200_OK)
 
         # 2. Find Order (handles exact match, startswith, and 50-char truncation)
         order = Order.objects.filter(order_id=merchant_trans_id).first()
@@ -138,6 +125,9 @@ class ClickWebhookView(views.APIView):
 
         if not order:
             return Response({'error': -5, 'error_note': 'User or Order does not exist'}, status=status.HTTP_200_OK)
+
+        if int(amount) != order.amount:
+            return Response({'error': -2, 'error_note': 'Incorrect parameter amount'}, status=status.HTTP_200_OK)
 
         # 3. Action 0: PREPARE
         if action == 0:

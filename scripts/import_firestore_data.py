@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -16,7 +17,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.db import transaction
 from apps.users.models import User
-from apps.games.models import Game
+from apps.games.models import Game, Slider
 from apps.licenses.models import License
 from apps.payments.models import Order
 
@@ -33,6 +34,9 @@ def parse_dt(val):
                 return timezone.make_aware(parsed)
             return parsed
     return timezone.now()
+
+
+HWID_PATTERN = re.compile(r'^[A-F0-9]{64}$')
 
 
 def run_migration():
@@ -100,7 +104,14 @@ def run_migration():
                 'key_prefix': g.get('keyPrefix') or '',
             }
 
-            obj, _ = Game.objects.update_or_create(id=game_id, defaults=defaults)
+            # Admin edits reach Django first, and Firestore misses them when its quota runs out.
+            # Only a Firestore copy that is provably newer may replace the Django row.
+            current = Game.objects.filter(id=game_id).first()
+            firestore_updated = parse_dt(g['updatedAt']) if g.get('updatedAt') else None
+            if current and (not firestore_updated or firestore_updated <= current.updated_at):
+                obj = current
+            else:
+                obj, _ = Game.objects.update_or_create(id=game_id, defaults=defaults)
             game_map[game_id] = obj
             game_map[slug] = obj
 
@@ -168,6 +179,8 @@ def run_migration():
     licenses_created = 0
     licenses_updated = 0
     licenses_skipped = 0
+    seen_pairs = set()
+    duplicate_pairs = set()
 
     with transaction.atomic():
         for lic in data['licenses']:
@@ -213,7 +226,11 @@ def run_migration():
 
             status = lic.get('status', 'active')
             hwid = lic.get('hwid')
-            bound_device_name = lic.get('boundDeviceName')
+            # Placeholders such as LOCAL_HWID were never real machines; let those users re-bind.
+            if not hwid or not HWID_PATTERN.match(str(hwid)):
+                hwid = None
+                bound_at_dt = None
+            bound_device_name = lic.get('boundDeviceName') if hwid else None
             payment_provider = lic.get('paymentProvider', 'none')
             payment_ref = str(lic.get('paymentRef') or '')
             paid_amount = int(lic.get('paidAmount') or 0)
@@ -223,10 +240,18 @@ def run_migration():
 
             if existing:
                 existing.status = status
-                if hwid and not existing.hwid:
+                # The launcher only ever wrote HWIDs to Firestore, so Firestore wins here,
+                # including when it says "unbound". A duplicate doc may not erase a binding.
+                pair = (user.id, game.id)
+                if pair in seen_pairs:
+                    duplicate_pairs.add(pair)
+                if hwid or pair not in seen_pairs:
                     existing.hwid = hwid
                     existing.bound_at = bound_at_dt
                     existing.bound_device_name = bound_device_name
+                seen_pairs.add(pair)
+                existing.admin_note = lic.get('adminNote') or existing.admin_note
+                existing.granted_by = lic.get('grantedBy') or existing.granted_by
                 if payment_ref and not existing.payment_ref:
                     existing.payment_ref = payment_ref
                     existing.payment_provider = payment_provider
@@ -251,14 +276,47 @@ def run_migration():
                     payment_ref=payment_ref,
                     paid_amount=paid_amount,
                     revoked_reason=revoked_reason,
+                    admin_note=lic.get('adminNote') or '',
+                    granted_by=lic.get('grantedBy') or '',
                     created_at=created_at_dt
                 )
+                seen_pairs.add((user.id, game.id))
                 new_lic.save()
                 user_game_pairs[(user.id, game.id)] = new_lic
                 existing_licenses[lic_id] = new_lic
                 licenses_created += 1
 
     print(f"  Licenses done: {licenses_created} created, {licenses_updated} updated, {licenses_skipped} skipped.", flush=True)
+    print(f"  User+game pairs with duplicate Firestore docs: {len(duplicate_pairs)}", flush=True)
+
+    # Sliders
+    sliders = data.get('sliders', [])
+    print(f"\nMigrating Sliders ({len(sliders)} sliders)...", flush=True)
+    with transaction.atomic():
+        for slide in sliders:
+            slide_id = slide.get('id') or slide.get('slug')
+            if not slide_id:
+                continue
+            Slider.objects.update_or_create(
+                id=slide_id,
+                defaults={
+                    'slug': slide.get('slug') or slide_id,
+                    'title': slide.get('title') or '',
+                    'badge': slide.get('badge') or '',
+                    'headline_prefix': slide.get('headlinePrefix') or '',
+                    'headline_highlight': slide.get('headlineHighlight') or '',
+                    'headline_suffix': slide.get('headlineSuffix') or '',
+                    'description': slide.get('description') or '',
+                    'bg_image': slide.get('bgImage') or '',
+                    'card_image': slide.get('cardImage') or '',
+                    'card_tag': slide.get('cardTag') or '',
+                    'highlight_tag': slide.get('highlightTag') or '',
+                    'version': slide.get('version') or 'v1.0.0',
+                    'card_description': slide.get('cardDescription') or '',
+                    'order': slide.get('order') or 0,
+                    'is_active': slide.get('isActive') is not False,
+                }
+            )
 
     # 4. MIGRATE ORDERS
     print(f"\n[4/4] Migrating Orders ({len(data['orders'])} orders)...", flush=True)

@@ -1,6 +1,14 @@
-from rest_framework import generics, permissions, status
+import os
+import uuid
+
+from django.conf import settings
+from django.core.files.storage import default_storage
+from django.utils.text import get_valid_filename
+from rest_framework import generics, permissions, status, views
+from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 from django.db.models import Q
+from apps.users.permissions import IsAdmin
 from .models import Game, Slider
 from .serializers import GameSerializer, SliderSerializer
 
@@ -45,6 +53,51 @@ class SliderListView(generics.ListAPIView):
     pagination_class = None
     queryset = Slider.objects.filter(is_active=True).order_by('order')
 
+
+
+class AdminSliderListCreateView(generics.ListCreateAPIView):
+    serializer_class = SliderSerializer
+    permission_classes = [IsAdmin]
+    pagination_class = None
+    queryset = Slider.objects.all().order_by('order')
+
+
+class AdminSliderDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = SliderSerializer
+    permission_classes = [IsAdmin]
+    lookup_field = 'id'
+    queryset = Slider.objects.all()
+
+    def put(self, request, *args, **kwargs):
+        return self.partial_update(request, *args, **kwargs)
+
+
+# Files that a browser would execute if served from our own domain.
+BLOCKED_UPLOAD_EXTENSIONS = {'.html', '.htm', '.xhtml', '.svg', '.js', '.mjs', '.php', '.py', '.sh'}
+
+
+class AdminFileUploadView(views.APIView):
+    permission_classes = [IsAdmin]
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        upload = request.FILES.get('file')
+        if not upload:
+            return Response({'error': 'Fayl yuborilmadi.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        name = get_valid_filename(os.path.basename(upload.name))
+        if os.path.splitext(name)[1].lower() in BLOCKED_UPLOAD_EXTENSIONS:
+            return Response({'error': 'Bu turdagi faylni yuklash mumkin emas.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        folder = get_valid_filename(request.data.get('folder') or 'general')
+        # The random segment keeps published links stable when a new version has the same name.
+        saved_path = default_storage.save(f'uploads/{folder}/{uuid.uuid4().hex[:12]}/{name}', upload)
+
+        return Response({
+            'url': f"{settings.PUBLIC_API_URL.rstrip('/')}{settings.MEDIA_URL}{saved_path}",
+            'name': name,
+            'size': upload.size,
+        }, status=status.HTTP_201_CREATED)
 
 
 class AdminGameCreateUpdateView(generics.CreateAPIView, generics.UpdateAPIView, generics.DestroyAPIView):

@@ -3,6 +3,7 @@ from .views import (
     MyLicensesView,
     ClaimFreeLicenseView,
     BindHwidView,
+    GameLicenseStatsView,
     CreateDeviceSessionView,
     ApproveDeviceSessionView,
     PollDeviceSessionView,
@@ -13,6 +14,7 @@ urlpatterns = [
     path('my/', MyLicensesView.as_view(), name='my-licenses'),
     path('claim-free/', ClaimFreeLicenseView.as_view(), name='claim-free-license'),
     path('bind-hwid/', BindHwidView.as_view(), name='bind-hwid'),
+    path('stats/', GameLicenseStatsView.as_view(), name='license-stats'),
     
     # Device pairing
     path('device/create/', CreateDeviceSessionView.as_view(), name='device-create'),
