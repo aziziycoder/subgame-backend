@@ -1,7 +1,16 @@
+from datetime import timedelta
 from unittest import mock
 
+from django.db import connection
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 from rest_framework.test import APITestCase
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from apps.games.models import Game
+from apps.licenses.models import License
+from apps.payments.models import Order
 
 from .models import User
 
@@ -67,3 +76,111 @@ class GoogleAuthTests(APITestCase):
 
     def test_request_without_any_token_is_invalid(self):
         self.assertEqual(self.client.post(GOOGLE_URL, {}, format='json').status_code, 400)
+
+
+USERS_URL = '/api/v1/auth/admin/users-with-licenses/'
+DASHBOARD_URL = '/api/v1/auth/admin/dashboard-stats/'
+
+
+def bearer(user):
+    return f'Bearer {RefreshToken.for_user(user).access_token}'
+
+
+class AdminUsersPaginationTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(email='boss@example.com', id='adminuid', role='admin')
+        self.game = Game.objects.create(id='stray', slug='stray', title='Stray', cover='https://x/y.jpg')
+        base = timezone.now()
+        for i in range(120):
+            user = User.objects.create_user(
+                email=f'user{i:03d}@example.com', id=f'uid{i:03d}', display_name=f'Player {i}',
+                last_login_at=base - timedelta(minutes=i),
+            )
+            if i % 10 == 0:
+                License.objects.create(
+                    id=f'{user.id}_stray', user=user, game=self.game, user_email=user.email,
+                    game_title='Stray', game_slug='stray', hwid='A' * 64 if i % 20 == 0 else None,
+                )
+        self.client.credentials(HTTP_AUTHORIZATION=bearer(self.admin))
+
+    def test_returns_fifty_users_per_page_with_totals(self):
+        data = self.client.get(USERS_URL).data
+        self.assertEqual(len(data['users']), 50)
+        self.assertEqual(data['pagination'], {'page': 1, 'pageSize': 50, 'total': 121, 'totalPages': 3})
+        self.assertEqual(data['stats']['totalUsers'], 121)
+        self.assertEqual(data['stats']['totalLicenses'], 12)
+        self.assertEqual(data['stats']['totalBoundDevices'], 6)
+
+    def test_last_page_holds_the_remainder(self):
+        self.assertEqual(len(self.client.get(USERS_URL, {'page': 3}).data['users']), 21)
+        self.assertEqual(self.client.get(USERS_URL, {'page': 99}).data['pagination']['page'], 3)
+
+    def test_search_covers_users_beyond_the_first_page(self):
+        data = self.client.get(USERS_URL, {'search': 'user115'}).data
+        self.assertEqual([u['email'] for u in data['users']], ['user115@example.com'])
+        self.assertEqual(data['pagination']['total'], 1)
+
+    def test_filters_run_on_the_server(self):
+        devices = self.client.get(USERS_URL, {'filter': 'with_devices'}).data
+        self.assertEqual(devices['pagination']['total'], 6)
+        self.assertTrue(all(u['boundDevicesCount'] == 1 for u in devices['users']))
+        admins = self.client.get(USERS_URL, {'filter': 'admin'}).data
+        self.assertEqual([u['email'] for u in admins['users']], ['boss@example.com'])
+        self.assertEqual(admins['filterCounts'], {'all': 121, 'admin': 1, 'user': 120, 'with_devices': 6})
+
+    def test_licenses_are_attached_without_a_query_per_user(self):
+        with CaptureQueriesContext(connection) as ctx:
+            data = self.client.get(USERS_URL, {'page_size': 120}).data
+        self.assertEqual(len(data['users']), 120)
+        self.assertLess(len(ctx.captured_queries), 15)
+        with_license = next(u for u in data['users'] if u['email'] == 'user010@example.com')
+        self.assertEqual(with_license['claimedGamesCount'], 1)
+        self.assertEqual(with_license['licenses'][0]['gameSlug'], 'stray')
+
+    def test_non_admin_is_refused(self):
+        self.client.credentials(HTTP_AUTHORIZATION=bearer(User.objects.get(id='uid001')))
+        self.assertEqual(self.client.get(USERS_URL).status_code, 403)
+        self.assertEqual(self.client.get(DASHBOARD_URL).status_code, 403)
+
+
+class AdminDashboardStatsTests(APITestCase):
+    def setUp(self):
+        now = timezone.now()
+        self.admin = User.objects.create_user(email='boss@example.com', id='adminuid', role='admin')
+        old = User.objects.create_user(email='old@example.com', id='olduid', created_at=now - timedelta(days=60))
+        fresh = User.objects.create_user(email='new@example.com', id='newuid', created_at=now - timedelta(days=3))
+        stray = Game.objects.create(id='stray', slug='stray', title='Stray', cover='https://x/s.jpg')
+        cup = Game.objects.create(id='cuphead', slug='cuphead', title='Cuphead', cover='https://x/c.jpg')
+        for user, game, hwid in ((old, stray, 'A' * 64), (fresh, stray, 'A' * 64), (fresh, cup, None)):
+            License.objects.create(
+                id=f'{user.id}_{game.id}', user=user, game=game, user_email=user.email,
+                game_title=game.title, game_slug=game.slug, hwid=hwid,
+                bound_at=now if hwid else None, payment_provider='click' if game is cup else 'free',
+            )
+        Order.objects.create(order_id='newuid__cuphead', user=fresh, game=cup, user_email=fresh.email,
+                             game_title='Cuphead', game_slug='cuphead', status='paid', paid_amount=15000)
+        Order.objects.create(order_id='olduid__cuphead', user=old, game=cup, user_email=old.email,
+                             game_title='Cuphead', game_slug='cuphead', status='pending')
+        self.client.credentials(HTTP_AUTHORIZATION=bearer(self.admin))
+
+    def test_counts_come_from_the_database(self):
+        data = self.client.get(DASHBOARD_URL).data
+        self.assertEqual(data['users']['total'], 3)
+        self.assertEqual(data['users']['last7'], 2)
+        self.assertEqual(data['users']['admins'], 1)
+        self.assertEqual(data['users']['withLicense'], 2)
+        self.assertEqual(data['licenses']['total'], 3)
+        self.assertEqual(data['licenses']['bound'], 2)
+        self.assertEqual(data['devices']['uniqueHwids'], 1)
+        self.assertEqual(data['orders']['paid'], 1)
+        self.assertEqual(data['orders']['pending'], 1)
+        self.assertEqual(data['orders']['revenue']['total'], 15000)
+        self.assertEqual([g['gameId'] for g in data['topGames']], ['stray', 'cuphead'])
+        self.assertEqual(data['topGames'][1]['revenue'], 15000)
+
+    def test_daily_series_covers_thirty_days(self):
+        data = self.client.get(DASHBOARD_URL).data
+        self.assertEqual(len(data['series']), 30)
+        self.assertEqual(sum(day['licenses'] for day in data['series']), 3)
+        self.assertEqual(sum(day['revenue'] for day in data['series']), 15000)
+        self.assertTrue(data['activity'])

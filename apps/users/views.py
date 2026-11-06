@@ -3,11 +3,13 @@ from django.conf import settings
 from django.utils import timezone
 from rest_framework import status, views, permissions
 from rest_framework.response import Response
+from django.db.models import Count, Prefetch, Q
 from rest_framework_simplejwt.tokens import RefreshToken
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
 from .models import User
+from .permissions import IsAdmin
 from .serializers import UserSerializer, GoogleAuthSerializer
 
 
@@ -155,57 +157,110 @@ class AdminUserDetailView(views.APIView):
         return Response({'error': 'Noto‘g‘ri rol.'}, status=status.HTTP_400_BAD_REQUEST)
 
 
+USERS_PAGE_SIZE = 50
+USERS_MAX_PAGE_SIZE = 500
+USER_FILTERS = ('all', 'admin', 'user', 'with_devices')
+
+
+def _bound_q(prefix=''):
+    return Q(**{f'{prefix}hwid__isnull': False}) & ~Q(**{f'{prefix}hwid': ''})
+
+
+def _positive_int(value, default, maximum=None):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    if number < 1:
+        return default
+    return min(number, maximum) if maximum else number
+
+
 class AdminUsersWithLicensesView(views.APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    """One page of users with their licenses. Search and filter run in the
+    database, so they cover every user, not only the page that is shown."""
+    permission_classes = [IsAdmin]
 
     def get(self, request):
-        if not request.user.is_admin:
-            return Response({'error': 'Ruxsat berilmagan.'}, status=status.HTTP_403_FORBIDDEN)
-
         from apps.licenses.models import License
         from apps.licenses.serializers import LicenseSerializer
 
-        users = User.objects.all().order_by('-last_login_at', '-created_at')
-        licenses = License.objects.all().select_related('user')
+        page_size = _positive_int(request.query_params.get('page_size'), USERS_PAGE_SIZE, USERS_MAX_PAGE_SIZE)
+        page = _positive_int(request.query_params.get('page'), 1)
+        search = (request.query_params.get('search') or '').strip()
+        user_filter = request.query_params.get('filter') or 'all'
+        if user_filter not in USER_FILTERS:
+            user_filter = 'all'
 
-        lic_by_user = {}
-        total_bound = 0
-        for lic in licenses:
-            u_id = lic.user_id
-            if u_id not in lic_by_user:
-                lic_by_user[u_id] = []
-            lic_data = LicenseSerializer(lic).data
-            lic_by_user[u_id].append(lic_data)
-            if lic.hwid:
-                total_bound += 1
+        admin_q = Q(role='admin') | Q(is_superuser=True)
+        users = User.objects.annotate(
+            claimed_count=Count('licenses'),
+            active_count=Count('licenses', filter=Q(licenses__status='active')),
+            bound_count=Count('licenses', filter=_bound_q('licenses__')),
+        )
+        if search:
+            users = users.filter(
+                Q(email__icontains=search) | Q(display_name__icontains=search) | Q(id__icontains=search)
+            )
+
+        searched = users
+        if user_filter == 'admin':
+            users = users.filter(admin_q)
+        elif user_filter == 'user':
+            users = users.exclude(admin_q)
+        elif user_filter == 'with_devices':
+            users = users.filter(bound_count__gt=0)
+
+        total = users.count()
+        total_pages = max(1, -(-total // page_size))
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+
+        page_users = list(
+            users.order_by('-last_login_at', '-created_at', 'id').prefetch_related(
+                Prefetch('licenses', queryset=License.objects.order_by('-created_at'))
+            )[offset:offset + page_size]
+        )
 
         users_list = []
-        total_admins = 0
-        for u in users:
-            if u.is_admin:
-                total_admins += 1
-            u_lics = lic_by_user.get(u.id, [])
-            bound_count = sum(1 for l in u_lics if l.get('hwid'))
+        for u in page_users:
             user_data = UserSerializer(u).data
             user_data.update({
-                'licenses': u_lics,
-                'claimedGamesCount': len(u_lics),
-                'activeLicensesCount': sum(1 for l in u_lics if l.get('status') == 'active'),
-                'boundDevicesCount': bound_count,
+                'licenses': LicenseSerializer(u.licenses.all(), many=True).data,
+                'claimedGamesCount': u.claimed_count,
+                'activeLicensesCount': u.active_count,
+                'boundDevicesCount': u.bound_count,
             })
             users_list.append(user_data)
 
+        searched_ids = searched.values('id')
+        filter_counts = User.objects.filter(id__in=searched_ids).aggregate(
+            all=Count('id'),
+            admin=Count('id', filter=admin_q),
+        )
+        filter_counts['user'] = filter_counts['all'] - filter_counts['admin']
+        filter_counts['with_devices'] = User.objects.filter(
+            id__in=searched_ids, licenses__in=License.objects.filter(_bound_q())
+        ).distinct().count()
+
+        license_totals = License.objects.aggregate(total=Count('id'), bound=Count('id', filter=_bound_q()))
         stats = {
-            'totalUsers': users.count(),
-            'totalAdmins': total_admins,
-            'totalLicenses': licenses.count(),
-            'totalBoundDevices': total_bound,
+            'totalUsers': User.objects.count(),
+            'totalAdmins': User.objects.filter(admin_q).count(),
+            'totalLicenses': license_totals['total'],
+            'totalBoundDevices': license_totals['bound'],
             'orphanedLicensesCount': 0,
-            'rawLicensesCount': licenses.count(),
+            'rawLicensesCount': license_totals['total'],
         }
 
         return Response({
             'users': users_list,
             'stats': stats,
+            'filterCounts': filter_counts,
+            'pagination': {
+                'page': page,
+                'pageSize': page_size,
+                'total': total,
+                'totalPages': total_pages,
+            },
         })
-
