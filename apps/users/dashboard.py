@@ -48,6 +48,41 @@ def _daily(queryset, field, since, value=None):
     return {row['day']: row['n'] or 0 for row in rows}
 
 
+MANUAL_PROVIDERS = ('manual_paid', 'other', 'payme')
+
+
+def _manual_payments(click_paid, other_paid):
+    """Money an admin recorded by hand, each payment once.
+
+    Two places hold it: paid orders Click never confirmed (manual orders from
+    the Firestore era), and licenses an admin granted with a paid amount
+    (the grant dialog creates no order). A license is skipped when an order
+    already covers the same user and game, so nothing is counted twice.
+    """
+    entries = []
+    covered = set(click_paid.values_list('user_id', 'game_id'))
+    for order in other_paid:
+        covered.add((order.user_id, order.game_id))
+        if order.paid_amount > 0:
+            entries.append({
+                'source': 'order', 'amount': order.paid_amount, 'at': order.created_at,
+                'game_id': order.game_id, 'user': order.user_email, 'email': order.user_email,
+                'title': order.game_title, 'provider': order.payment_provider,
+            })
+    granted = License.objects.filter(paid_amount__gt=0).filter(
+        Q(payment_provider__in=MANUAL_PROVIDERS) | ~Q(granted_by='')
+    )
+    for lic in granted:
+        if (lic.user_id, lic.game_id) in covered:
+            continue
+        entries.append({
+            'source': 'license', 'amount': lic.paid_amount, 'at': lic.created_at,
+            'game_id': lic.game_id, 'user': lic.user_name or lic.user_email, 'email': lic.user_email,
+            'title': lic.game_title, 'provider': lic.payment_provider,
+        })
+    return entries
+
+
 def _iso(value):
     return value.isoformat() if value else None
 
@@ -118,6 +153,25 @@ class AdminDashboardStatsView(views.APIView):
         orders['otherRevenue'] = other_paid.aggregate(total=Sum('paid_amount'))['total'] or 0
         orders['currency'] = 'UZS'
 
+        manual = _manual_payments(paid, other_paid)
+        local_day = lambda dt: timezone.localtime(dt).date()
+        orders['manualRevenue'] = {
+            'total': sum(m['amount'] for m in manual),
+            'today': sum(m['amount'] for m in manual if m['at'] >= today),
+            'last7': sum(m['amount'] for m in manual if m['at'] >= week),
+            'last30': sum(m['amount'] for m in manual if m['at'] >= month),
+        }
+        orders['manualCount'] = len(manual)
+        orders['manualFromOrders'] = sum(1 for m in manual if m['source'] == 'order')
+        orders['manualFromLicenses'] = sum(1 for m in manual if m['source'] == 'license')
+        # Admin-entered paid licenses saved without an amount cannot be counted as money.
+        orders['manualWithoutAmount'] = License.objects.filter(
+            payment_provider__in=MANUAL_PROVIDERS, paid_amount=0
+        ).count()
+        orders['totalRevenue'] = {
+            key: orders['revenue'][key] + orders['manualRevenue'][key] for key in orders['revenue']
+        }
+
         # Games, ranked by licenses
         game_rows = (
             License.objects.values('game_id')
@@ -140,6 +194,7 @@ class AdminDashboardStatsView(views.APIView):
         for row in game_rows:
             info = game_info.get(row['game_id'], {})
             money = revenue_by_game.get(row['game_id'], {})
+            manual_money = sum(m['amount'] for m in manual if m['game_id'] == row['game_id'])
             games_out.append({
                 'gameId': row['game_id'],
                 'title': info.get('title') or row['game_id'],
@@ -150,7 +205,9 @@ class AdminDashboardStatsView(views.APIView):
                 'bound': row['bound'],
                 'last30': row['last30'],
                 'paidOrders': money.get('paidOrders', 0),
-                'revenue': money.get('revenue') or 0,
+                'clickRevenue': money.get('revenue') or 0,
+                'manualRevenue': manual_money,
+                'revenue': (money.get('revenue') or 0) + manual_money,
             })
         catalog = Game.objects.aggregate(
             total=Count('pk'),
@@ -161,6 +218,11 @@ class AdminDashboardStatsView(views.APIView):
         signups = _daily(User.objects.all(), 'created_at', month)
         claims = _daily(License.objects.all(), 'created_at', month)
         paid_daily = _daily(paid, 'created_at', month, Sum('paid_amount'))
+        manual_daily = {}
+        for m in manual:
+            if m['at'] >= month:
+                day = local_day(m['at'])
+                manual_daily[day] = manual_daily.get(day, 0) + m['amount']
         series = []
         start = timezone.localtime(month).date()
         for i in range(SERIES_DAYS):
@@ -169,7 +231,9 @@ class AdminDashboardStatsView(views.APIView):
                 'date': day.isoformat(),
                 'users': signups.get(day, 0),
                 'licenses': claims.get(day, 0),
-                'revenue': paid_daily.get(day, 0),
+                'clickRevenue': paid_daily.get(day, 0),
+                'manualRevenue': manual_daily.get(day, 0),
+                'revenue': paid_daily.get(day, 0) + manual_daily.get(day, 0),
             })
 
         # Recent activity feed
@@ -196,6 +260,12 @@ class AdminDashboardStatsView(views.APIView):
                 'type': 'payment', 'at': _iso(order.created_at),
                 'user': order.user_email, 'email': order.user_email,
                 'detail': order.game_title, 'amount': order.paid_amount,
+            })
+        for m in sorted(manual, key=lambda m: m['at'], reverse=True)[:RECENT_ITEMS]:
+            activity.append({
+                'type': 'manual', 'at': _iso(m['at']),
+                'user': m['user'], 'email': m['email'],
+                'detail': m['title'], 'amount': m['amount'], 'provider': m['provider'],
             })
         activity.sort(key=lambda item: item['at'] or '', reverse=True)
 

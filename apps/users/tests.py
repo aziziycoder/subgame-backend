@@ -168,6 +168,13 @@ class AdminDashboardStatsTests(APITestCase):
         Order.objects.create(order_id='newuid__stray', user=fresh, game=stray, user_email=fresh.email,
                              game_title='Stray', game_slug='stray', status='paid', paid_amount=7000,
                              payment_provider='manual_paid')
+        # Granted by an admin in the panel with a price: no order exists for it
+        License.objects.create(id='olduid_cuphead', user=old, game=cup, user_email=old.email,
+                               game_title='Cuphead', game_slug='cuphead', payment_provider='manual_paid',
+                               paid_amount=9000, granted_by='boss@example.com')
+        rdr = Game.objects.create(id='rdr', slug='rdr', title='RDR', cover='https://x/r.jpg')
+        License.objects.create(id='newuid_rdr', user=fresh, game=rdr, user_email=fresh.email,
+                               game_title='RDR', game_slug='rdr', payment_provider='manual_paid', paid_amount=0)
         self.client.credentials(HTTP_AUTHORIZATION=bearer(self.admin))
 
     def test_counts_come_from_the_database(self):
@@ -176,7 +183,7 @@ class AdminDashboardStatsTests(APITestCase):
         self.assertEqual(data['users']['last7'], 2)
         self.assertEqual(data['users']['admins'], 1)
         self.assertEqual(data['users']['withLicense'], 2)
-        self.assertEqual(data['licenses']['total'], 3)
+        self.assertEqual(data['licenses']['total'], 5)
         self.assertEqual(data['licenses']['bound'], 2)
         self.assertEqual(data['devices']['uniqueHwids'], 1)
         self.assertEqual(data['orders']['paid'], 1)
@@ -184,13 +191,25 @@ class AdminDashboardStatsTests(APITestCase):
         self.assertEqual(data['orders']['revenue']['total'], 15000)
         self.assertEqual(data['orders']['otherPaid'], 2)
         self.assertEqual(data['orders']['otherRevenue'], 12000)
-        self.assertEqual([g['gameId'] for g in data['topGames']], ['stray', 'cuphead'])
-        self.assertEqual(data['topGames'][0]['revenue'], 0)
-        self.assertEqual(data['topGames'][1]['revenue'], 15000)
+        self.assertEqual([g['gameId'] for g in data['topGames']], ['cuphead', 'stray', 'rdr'])
+
+    def test_manual_payments_are_added_once(self):
+        orders = self.client.get(DASHBOARD_URL).data['orders']
+        # 5000 unconfirmed order + 7000 manual order + 9000 admin-granted license;
+        # the free license under the 7000 order is not counted again
+        self.assertEqual(orders['manualRevenue']['total'], 21000)
+        self.assertEqual(orders['manualFromOrders'], 2)
+        self.assertEqual(orders['manualFromLicenses'], 1)
+        self.assertEqual(orders['manualWithoutAmount'], 1)
+        self.assertEqual(orders['revenue']['total'], 15000)
+        self.assertEqual(orders['totalRevenue']['total'], 36000)
+        cuphead = self.client.get(DASHBOARD_URL).data['topGames'][0]
+        self.assertEqual((cuphead['clickRevenue'], cuphead['manualRevenue'], cuphead['revenue']), (15000, 9000, 24000))
 
     def test_daily_series_covers_thirty_days(self):
         data = self.client.get(DASHBOARD_URL).data
         self.assertEqual(len(data['series']), 30)
-        self.assertEqual(sum(day['licenses'] for day in data['series']), 3)
-        self.assertEqual(sum(day['revenue'] for day in data['series']), 15000)
+        self.assertEqual(sum(day['licenses'] for day in data['series']), 5)
+        self.assertEqual(sum(day['clickRevenue'] for day in data['series']), 15000)
+        self.assertEqual(sum(day['revenue'] for day in data['series']), 36000)
         self.assertTrue(data['activity'])
