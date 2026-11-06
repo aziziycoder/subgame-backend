@@ -8,6 +8,8 @@ from .views import (
     ApproveDeviceSessionView,
     PollDeviceSessionView,
     AdminLicenseManageView,
+    AdminLicenseListView,
+    AdminLicenseSummaryView,
 )
 
 urlpatterns = [
@@ -23,5 +25,8 @@ urlpatterns = [
     
     # Admin
     path('admin/', AdminLicenseManageView.as_view(), name='admin-licenses-list'),
+    # Before admin/<license_id>/, which would otherwise swallow these names
+    path('admin/list/', AdminLicenseListView.as_view(), name='admin-licenses-page'),
+    path('admin/summary/', AdminLicenseSummaryView.as_view(), name='admin-licenses-summary'),
     path('admin/<str:license_id>/', AdminLicenseManageView.as_view(), name='admin-license-action'),
 ]

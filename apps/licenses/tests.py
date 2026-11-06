@@ -123,3 +123,48 @@ class DevicePairingTests(LicenseTestBase):
         DeviceSession.objects.filter(session_id=session['code']).update(expires_at=timezone.now() - timedelta(minutes=1))
         self.assertEqual(self.approve(session['code']).status_code, 400)
         self.assertEqual(self.poll(session['code'], session['pollToken']).data['status'], 'expired')
+
+
+class AdminLicenseListTests(LicenseTestBase):
+    def setUp(self):
+        super().setUp()
+        self.other = Game.objects.create(id='stray', slug='stray', title='Stray', cover='https://x/s.jpg')
+        for i in range(60):
+            user = User.objects.create_user(email=f'p{i:02d}@example.com', id=f'p{i:02d}')
+            License.objects.create(
+                id=f'p{i:02d}_stray', user=user, game=self.other, user_email=user.email,
+                game_title='Stray', game_slug='stray', hwid=HWID_A if i < 10 else None,
+                status='revoked' if i >= 55 else 'active',
+                payment_provider='click' if i == 59 else 'free',
+            )
+        self.auth(self.admin)
+
+    def page(self, **params):
+        return self.client.get('/api/v1/licenses/admin/list/', params).data
+
+    def test_pages_by_fifty(self):
+        data = self.page()
+        self.assertEqual(len(data['licenses']), 50)
+        self.assertEqual(data['pagination'], {'page': 1, 'pageSize': 50, 'total': 61, 'totalPages': 2})
+        self.assertEqual(len(self.page(page=2)['licenses']), 11)
+
+    def test_filters_run_on_the_server(self):
+        self.assertEqual(self.page(game='hollow-knight')['pagination']['total'], 1)
+        self.assertEqual(self.page(device='bound')['pagination']['total'], 10)
+        self.assertEqual(self.page(status='revoked')['pagination']['total'], 5)
+        self.assertEqual(self.page(provider='click')['pagination']['total'], 1)
+        self.assertEqual([l['userEmail'] for l in self.page(search='p42@')['licenses']], ['p42@example.com'])
+
+    def test_summary_counts_per_game_without_listing_licenses(self):
+        data = self.client.get('/api/v1/licenses/admin/summary/').data
+        self.assertEqual(data['stats']['totalLicenses'], 61)
+        self.assertEqual(data['stats']['totalBoundDevices'], 10)
+        self.assertEqual([g['gameId'] for g in data['groups']], ['stray', 'hollow-knight'])
+        self.assertEqual(data['groups'][0]['totalLicenses'], 60)
+        self.assertNotIn('licenses', data['groups'][0])
+        self.assertEqual(len(data['unpaidRevokedIds']), 4)
+
+    def test_non_admin_is_refused(self):
+        self.auth(self.user)
+        self.assertEqual(self.client.get('/api/v1/licenses/admin/list/').status_code, 403)
+        self.assertEqual(self.client.get('/api/v1/licenses/admin/summary/').status_code, 403)

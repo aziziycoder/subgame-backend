@@ -2,7 +2,7 @@ import re
 import secrets
 from datetime import timedelta
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Max, Q
 from django.utils import timezone
 from rest_framework import views, status, permissions
 from rest_framework.response import Response
@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from apps.games.models import Game
 from .models import License, DeviceSession
 from .serializers import LicenseSerializer, DeviceSessionSerializer
+from apps.users.permissions import IsAdmin
 
 
 # SHA-256 hex digest produced by the launcher; rejects placeholders such as LOCAL_HWID.
@@ -240,6 +241,141 @@ class PollDeviceSessionView(views.APIView):
 
 
 # Admin License Management
+LICENSES_PAGE_SIZE = 50
+LICENSES_MAX_PAGE_SIZE = 500
+BOUND_Q = Q(hwid__isnull=False) & ~Q(hwid='')
+LICENSE_SORTS = {
+    'newest': ('-created_at', 'id'),
+    'oldest': ('created_at', 'id'),
+    'recently_bound': ('-bound_at', '-created_at', 'id'),
+}
+
+
+def _positive_int(value, default, maximum=None):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    if number < 1:
+        return default
+    return min(number, maximum) if maximum else number
+
+
+def _filtered_licenses(params):
+    licenses = License.objects.all()
+    search = (params.get('search') or '').strip()
+    if search:
+        licenses = licenses.filter(
+            Q(user_email__icontains=search) | Q(user_name__icontains=search) | Q(user__id__icontains=search)
+            | Q(game_title__icontains=search) | Q(hwid__icontains=search)
+            | Q(bound_device_name__icontains=search) | Q(id__icontains=search)
+            | Q(payment_ref__icontains=search)
+        )
+    game = params.get('game')
+    if game and game != 'all':
+        licenses = licenses.filter(Q(game_id=game) | Q(game_slug=game))
+    license_status = params.get('status')
+    if license_status in ('active', 'revoked'):
+        licenses = licenses.filter(status=license_status)
+    device = params.get('device')
+    if device == 'bound':
+        licenses = licenses.filter(BOUND_Q)
+    elif device == 'unbound':
+        licenses = licenses.exclude(BOUND_Q)
+    provider = params.get('provider')
+    if provider and provider != 'all':
+        licenses = licenses.filter(payment_provider=provider)
+    return licenses
+
+
+class AdminLicenseListView(views.APIView):
+    """One page of licenses; every filter runs in the database."""
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        params = request.query_params
+        page_size = _positive_int(params.get('page_size'), LICENSES_PAGE_SIZE, LICENSES_MAX_PAGE_SIZE)
+        page = _positive_int(params.get('page'), 1)
+        licenses = _filtered_licenses(params)
+
+        total = licenses.count()
+        total_pages = max(1, -(-total // page_size))
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+        order = LICENSE_SORTS.get(params.get('sort'), LICENSE_SORTS['newest'])
+        rows = licenses.order_by(*order)[offset:offset + page_size]
+
+        return Response({
+            'licenses': LicenseSerializer(rows, many=True).data,
+            'pagination': {'page': page, 'pageSize': page_size, 'total': total, 'totalPages': total_pages},
+        })
+
+
+class AdminLicenseSummaryView(views.APIView):
+    """Totals and per-game counts for the licenses section, without the licenses themselves."""
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        totals = License.objects.aggregate(
+            total=Count('pk'),
+            active=Count('pk', filter=Q(status='active')),
+            revoked=Count('pk', filter=Q(status='revoked')),
+            bound=Count('pk', filter=BOUND_Q),
+        )
+        totals['uniqueUsers'] = License.objects.values('user_id').distinct().count()
+
+        rows = (
+            License.objects.values('game_id')
+            .annotate(
+                total=Count('pk'),
+                active=Count('pk', filter=Q(status='active')),
+                bound=Count('pk', filter=BOUND_Q),
+                lastClaimedAt=Max('created_at'),
+            )
+            .order_by('-total', 'game_id')
+        )
+        games = {g['id']: g for g in Game.objects.values('id', 'title', 'slug', 'cover', 'card_image', 'genres')}
+        groups = []
+        for row in rows:
+            info = games.get(row['game_id'], {})
+            groups.append({
+                'gameId': row['game_id'],
+                'gameTitle': info.get('title') or row['game_id'],
+                'gameSlug': info.get('slug') or row['game_id'],
+                'coverImage': info.get('card_image') or info.get('cover') or '',
+                'genres': info.get('genres') or [],
+                'totalLicenses': row['total'],
+                'activeLicenses': row['active'],
+                'boundDevicesCount': row['bound'],
+                'percentage': round(row['total'] * 100 / totals['total']) if totals['total'] else 0,
+                'lastClaimedAt': row['lastClaimedAt'],
+            })
+
+        providers = [
+            row['payment_provider'] or 'none'
+            for row in License.objects.values('payment_provider').distinct().order_by('payment_provider')
+        ]
+        # Revoked licenses that nobody paid for; the admin may delete them in bulk.
+        unpaid_revoked = list(
+            License.objects.filter(status='revoked', paid_amount=0).exclude(payment_provider='click')
+            .values_list('id', flat=True)
+        )
+
+        return Response({
+            'stats': {
+                'totalLicenses': totals['total'],
+                'activeLicenses': totals['active'],
+                'revokedLicenses': totals['revoked'],
+                'totalBoundDevices': totals['bound'],
+                'totalUniqueUsers': totals['uniqueUsers'],
+                'totalGamesClaimed': len(groups),
+            },
+            'groups': groups,
+            'providers': sorted(set(providers)),
+            'unpaidRevokedIds': unpaid_revoked,
+        })
+
+
 class AdminLicenseManageView(views.APIView):
     permission_classes = [permissions.IsAuthenticated]
 
