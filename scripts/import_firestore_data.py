@@ -341,6 +341,12 @@ def run_migration():
                 continue
 
             created_at_dt = parse_dt(ord_data.get('createdAt'))
+            # Keep the order's real state: a checkout that was opened but never
+            # paid must not be imported as a paid order.
+            order_status = ord_data.get('status') or 'pending'
+            if order_status not in dict(Order.STATUS_CHOICES):
+                order_status = 'pending'
+            paid_amount = (ord_data.get('paidAmount') or ord_data.get('amount') or 0) if order_status == 'paid' else 0
             order, created = Order.objects.update_or_create(
                 order_id=order_id,
                 defaults={
@@ -351,10 +357,10 @@ def run_migration():
                     'game_slug': game.slug,
                     'amount': ord_data.get('amount', 5000),
                     'currency': ord_data.get('currency', 'UZS'),
-                    'status': 'paid',
+                    'status': order_status,
                     'payment_provider': ord_data.get('paymentProvider', 'click'),
                     'click_trans_id': ord_data.get('clickTransId', ''),
-                    'paid_amount': ord_data.get('paidAmount', 5000),
+                    'paid_amount': paid_amount,
                     'created_at': created_at_dt
                 }
             )

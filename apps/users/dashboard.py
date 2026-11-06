@@ -21,6 +21,7 @@ RECENT_ITEMS = 12
 
 BOUND_Q = Q(hwid__isnull=False) & ~Q(hwid='')
 ADMIN_Q = Q(role='admin') | Q(is_superuser=True)
+CLICK_PAID_Q = Q(status='paid', payment_provider='click') & ~Q(click_trans_id='')
 
 
 def _local_midnight(now):
@@ -94,21 +95,27 @@ class AdminDashboardStatsView(views.APIView):
             'boundLast30': bound.filter(bound_at__gte=month).count(),
         }
 
-        # Orders and Click revenue
-        paid = Order.objects.filter(status='paid')
+        # Orders and Click revenue. Only an order Click confirmed (it carries
+        # Click's transaction id) counts as Click money; manual and other paid
+        # orders are reported apart. Orders are dated by creation: imported
+        # orders have no payment time, and a checkout is paid within minutes.
+        paid = Order.objects.filter(CLICK_PAID_Q)
+        other_paid = Order.objects.filter(status='paid').exclude(CLICK_PAID_Q)
         orders = Order.objects.aggregate(
             total=Count('pk'),
-            paid=Count('pk', filter=Q(status='paid')),
+            paid=Count('pk', filter=CLICK_PAID_Q),
+            otherPaid=Count('pk', filter=Q(status='paid') & ~CLICK_PAID_Q),
             pending=Count('pk', filter=Q(status__in=['pending', 'prepared'])),
             cancelled=Count('pk', filter=Q(status='cancelled')),
         )
         revenue = paid.aggregate(
             total=Sum('paid_amount'),
-            today=Sum('paid_amount', filter=Q(updated_at__gte=today)),
-            last7=Sum('paid_amount', filter=Q(updated_at__gte=week)),
-            last30=Sum('paid_amount', filter=Q(updated_at__gte=month)),
+            today=Sum('paid_amount', filter=Q(created_at__gte=today)),
+            last7=Sum('paid_amount', filter=Q(created_at__gte=week)),
+            last30=Sum('paid_amount', filter=Q(created_at__gte=month)),
         )
         orders['revenue'] = {k: v or 0 for k, v in revenue.items()}
+        orders['otherRevenue'] = other_paid.aggregate(total=Sum('paid_amount'))['total'] or 0
         orders['currency'] = 'UZS'
 
         # Games, ranked by licenses
@@ -153,7 +160,7 @@ class AdminDashboardStatsView(views.APIView):
         # Daily series for the last 30 days (Tashkent days)
         signups = _daily(User.objects.all(), 'created_at', month)
         claims = _daily(License.objects.all(), 'created_at', month)
-        paid_daily = _daily(paid, 'updated_at', month, Sum('paid_amount'))
+        paid_daily = _daily(paid, 'created_at', month, Sum('paid_amount'))
         series = []
         start = timezone.localtime(month).date()
         for i in range(SERIES_DAYS):
@@ -184,15 +191,15 @@ class AdminDashboardStatsView(views.APIView):
                 'user': lic.user_name or lic.user_email, 'email': lic.user_email,
                 'detail': lic.game_title, 'device': lic.bound_device_name or '',
             })
-        for order in paid.order_by('-updated_at')[:RECENT_ITEMS]:
+        for order in paid.order_by('-created_at')[:RECENT_ITEMS]:
             activity.append({
-                'type': 'payment', 'at': _iso(order.updated_at),
+                'type': 'payment', 'at': _iso(order.created_at),
                 'user': order.user_email, 'email': order.user_email,
                 'detail': order.game_title, 'amount': order.paid_amount,
             })
         activity.sort(key=lambda item: item['at'] or '', reverse=True)
 
-        last_payment = paid.aggregate(at=Max('updated_at'))['at']
+        last_payment = paid.aggregate(at=Max('created_at'))['at']
 
         return Response({
             'generatedAt': _iso(now),

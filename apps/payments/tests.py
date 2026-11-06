@@ -1,6 +1,6 @@
 import hashlib
 
-from django.test import override_settings
+from django.test import TestCase, override_settings
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -243,3 +243,48 @@ class AdminOrderListTests(APITestCase):
         user = User.objects.create_user(email='user@example.com', id='uid')
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(user).access_token}')
         self.assertEqual(self.client.get('/api/v1/payments/admin/orders/').status_code, 403)
+
+
+class FixImportedOrdersTests(TestCase):
+    def setUp(self):
+        import json
+        import tempfile
+        from apps.games.models import Game
+        from apps.users.models import User
+        self.user = User.objects.create_user(email='u@example.com', id='uid')
+        game = Game.objects.create(id='stray', slug='stray', title='Stray', cover='https://x/s.jpg')
+        other = Game.objects.create(id='cuphead', slug='cuphead', title='Cuphead', cover='https://x/c.jpg')
+        third = Game.objects.create(id='rdr', slug='rdr', title='RDR', cover='https://x/r.jpg')
+        common = dict(user=self.user, user_email='u@example.com', status='paid', paid_amount=5000)
+        Order.objects.create(order_id='uid__stray', game=game, game_title='Stray', game_slug='stray', **common)
+        Order.objects.create(order_id='uid__cuphead', game=other, game_title='Cuphead', game_slug='cuphead',
+                             click_trans_id='111', **common)
+        Order.objects.create(order_id='uid__rdr', game=third, game_title='RDR', game_slug='rdr',
+                             click_trans_id='222', **common)
+        self.export = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8')
+        json.dump({'orders': [
+            {'orderId': 'uid__stray', 'status': 'pending'},
+            {'orderId': 'uid__cuphead', 'status': 'pending'},  # paid later, Click confirmed it
+            {'orderId': 'uid__rdr', 'status': 'prepared'},
+        ]}, self.export)
+        self.export.close()
+
+    def run_command(self, *flags):
+        from io import StringIO
+        from django.core.management import call_command
+        call_command('fix_imported_orders', '--export', self.export.name, *flags, stdout=StringIO())
+
+    def test_dry_run_changes_nothing(self):
+        self.run_command()
+        self.assertEqual(Order.objects.filter(status='paid').count(), 3)
+
+    def test_apply_reverts_only_unconfirmed_orders(self):
+        self.run_command('--apply')
+        self.assertEqual(Order.objects.get(order_id='uid__stray').status, 'pending')
+        self.assertEqual(Order.objects.get(order_id='uid__stray').paid_amount, 0)
+        self.assertEqual(Order.objects.get(order_id='uid__cuphead').status, 'paid')
+        self.assertEqual(Order.objects.get(order_id='uid__rdr').status, 'paid')
+
+    def test_prepared_orders_need_their_own_flag(self):
+        self.run_command('--apply', '--include-prepared')
+        self.assertEqual(Order.objects.get(order_id='uid__rdr').status, 'prepared')

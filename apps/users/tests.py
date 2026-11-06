@@ -158,9 +158,16 @@ class AdminDashboardStatsTests(APITestCase):
                 bound_at=now if hwid else None, payment_provider='click' if game is cup else 'free',
             )
         Order.objects.create(order_id='newuid__cuphead', user=fresh, game=cup, user_email=fresh.email,
-                             game_title='Cuphead', game_slug='cuphead', status='paid', paid_amount=15000)
+                             game_title='Cuphead', game_slug='cuphead', status='paid', paid_amount=15000,
+                             click_trans_id='3970608254')
         Order.objects.create(order_id='olduid__cuphead', user=old, game=cup, user_email=old.email,
                              game_title='Cuphead', game_slug='cuphead', status='pending')
+        # Marked paid but never confirmed by Click (as the old import did)
+        Order.objects.create(order_id='olduid__stray', user=old, game=stray, user_email=old.email,
+                             game_title='Stray', game_slug='stray', status='paid', paid_amount=5000)
+        Order.objects.create(order_id='newuid__stray', user=fresh, game=stray, user_email=fresh.email,
+                             game_title='Stray', game_slug='stray', status='paid', paid_amount=7000,
+                             payment_provider='manual_paid')
         self.client.credentials(HTTP_AUTHORIZATION=bearer(self.admin))
 
     def test_counts_come_from_the_database(self):
@@ -175,7 +182,10 @@ class AdminDashboardStatsTests(APITestCase):
         self.assertEqual(data['orders']['paid'], 1)
         self.assertEqual(data['orders']['pending'], 1)
         self.assertEqual(data['orders']['revenue']['total'], 15000)
+        self.assertEqual(data['orders']['otherPaid'], 2)
+        self.assertEqual(data['orders']['otherRevenue'], 12000)
         self.assertEqual([g['gameId'] for g in data['topGames']], ['stray', 'cuphead'])
+        self.assertEqual(data['topGames'][0]['revenue'], 0)
         self.assertEqual(data['topGames'][1]['revenue'], 15000)
 
     def test_daily_series_covers_thirty_days(self):
