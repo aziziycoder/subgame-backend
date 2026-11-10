@@ -213,3 +213,113 @@ class AdminDashboardStatsTests(APITestCase):
         self.assertEqual(sum(day['clickRevenue'] for day in data['series']), 15000)
         self.assertEqual(sum(day['revenue'] for day in data['series']), 36000)
         self.assertTrue(data['activity'])
+
+
+class DailyReportTests(APITestCase):
+    """manage.py send_daily_report: one Tashkent day, Telegram mocked."""
+
+    DAY = '2026-03-10'
+
+    def setUp(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from apps.issues.models import TranslationRequest, TranslationVote
+
+        tz = ZoneInfo('Asia/Tashkent')
+        at = lambda d, h: datetime(2026, 3, d, h, 0, tzinfo=tz)
+        inside, before, after = at(10, 12), at(9, 23), at(11, 0)
+
+        old = User.objects.create_user(email='old@example.com', id='old', created_at=before)
+        fresh = User.objects.create_user(email='new@example.com', id='new', created_at=inside)
+        User.objects.create_user(email='late@example.com', id='late', created_at=after)
+        stray = Game.objects.create(id='stray', slug='stray', title='Stray')
+        evil = Game.objects.create(id='evil', slug='evil', title='<Evil & Co>')
+
+        def lic(user, game, created, **extra):
+            License.objects.create(id=f'{user.id}_{game.id}', user=user, game=game, user_email=user.email,
+                                   game_title=game.title, game_slug=game.slug, created_at=created, **extra)
+
+        lic(fresh, stray, inside, payment_provider='click', paid_amount=15000, hwid='PC1', bound_at=inside)
+        lic(fresh, evil, inside, hwid='PC1', bound_at=inside)
+        lic(old, stray, before, hwid='PC2', bound_at=before)
+        lic(old, evil, inside, payment_provider='manual_paid', paid_amount=20000, granted_by='admin')
+
+        Order.objects.create(order_id='new__stray', user=fresh, game=stray, user_email=fresh.email,
+                             game_title='Stray', game_slug='stray', status='paid', click_trans_id='T1',
+                             paid_amount=15000, created_at=inside)
+        Order.objects.create(order_id='old__stray', user=old, game=stray, user_email=old.email,
+                             game_title='Stray', game_slug='stray', status='paid', click_trans_id='T0',
+                             paid_amount=10000, created_at=before)
+        Order.objects.create(order_id='late__stray', user=old, game=evil, user_email=old.email,
+                             game_title='<Evil & Co>', game_slug='evil', status='pending', created_at=inside)
+
+        req = TranslationRequest.objects.create(steam_app_id=1, title='Hades <II>', created_at=inside)
+        TranslationVote.objects.create(request=req, user=fresh, created_at=inside)
+        TranslationVote.objects.create(request=req, user=old, created_at=inside)
+        TranslationVote.objects.create(request=req, user=User.objects.get(id='late'), created_at=after)
+
+    def run_command(self, *args):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('send_daily_report', '--date', self.DAY, *args, stdout=out)
+        return out.getvalue()
+
+    def test_dry_run_counts_only_that_day_and_escapes_user_content(self):
+        text = self.run_command('--dry-run')
+        self.assertIn('10.03.2026', text)
+        self.assertIn('• Yangi: <b>1</b>', text)  # one new user that day
+        self.assertIn('• Yangi: <b>3</b>', text)  # three licenses that day
+        self.assertIn('&lt;Evil &amp; Co&gt;: 2', text)
+        self.assertNotIn('<Evil', text)
+        self.assertIn("Bog'langan litsenziyalar: <b>2</b> (1 ta kompyuter)", text)
+        self.assertIn("Click: <b>1</b> ta — 15 000 so'm", text)
+        self.assertIn("Qo'lda kiritilgan: <b>1</b> ta — 20 000 so'm", text)
+        self.assertIn("Kunlik tushum: 35 000 so'm", text)
+        self.assertIn('Yakunlanmagan Click buyurtmalar: 1', text)
+        self.assertIn('Yangi ovozlar: <b>2</b>', text)
+        self.assertIn('1. Hades &lt;II&gt; — 2', text)
+        self.assertIn('• Foydalanuvchilar: 2', text)  # the user created next day is not in the totals
+        self.assertIn("Umumiy tushum: 45 000 so'm", text)
+
+    @override_settings(TELEGRAM_BOT_TOKEN='123:SECRET', TELEGRAM_REPORT_CHAT_ID='42')
+    def test_sends_html_message_to_chat(self):
+        with mock.patch('apps.users.daily_report.requests.post',
+                        return_value=fake_response(200, {'ok': True})) as post:
+            out = self.run_command()
+        self.assertIn('yuborildi', out)
+        url = post.call_args.args[0]
+        body = post.call_args.kwargs['json']
+        self.assertEqual(url, 'https://api.telegram.org/bot123:SECRET/sendMessage')
+        self.assertEqual(body['chat_id'], '42')
+        self.assertEqual(body['parse_mode'], 'HTML')
+        self.assertIn('kunlik hisobot', body['text'])
+
+    @override_settings(TELEGRAM_BOT_TOKEN='', TELEGRAM_REPORT_CHAT_ID='42')
+    def test_missing_settings_fail(self):
+        from django.core.management.base import CommandError
+        with mock.patch('apps.users.daily_report.requests.post') as post, \
+                self.assertRaisesMessage(CommandError, 'TELEGRAM_BOT_TOKEN'):
+            self.run_command()
+        post.assert_not_called()
+
+    @override_settings(TELEGRAM_BOT_TOKEN='123:SECRET', TELEGRAM_REPORT_CHAT_ID='42')
+    def test_telegram_refusal_fails_without_leaking_token(self):
+        import requests as http
+        from django.core.management.base import CommandError
+        refused = fake_response(400, {'ok': False, 'description': 'Bad Request: chat not found'})
+        with mock.patch('apps.users.daily_report.requests.post', return_value=refused), \
+                self.assertRaisesMessage(CommandError, 'chat not found'):
+            self.run_command()
+        boom = http.ConnectionError('https://api.telegram.org/bot123:SECRET/sendMessage failed')
+        with mock.patch('apps.users.daily_report.requests.post', side_effect=boom), \
+                self.assertRaises(CommandError) as ctx:
+            self.run_command()
+        self.assertNotIn('SECRET', str(ctx.exception))
+
+    def test_bad_date_fails(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('send_daily_report', '--date', '10.03.2026', '--dry-run', stdout=StringIO())

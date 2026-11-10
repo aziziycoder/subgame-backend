@@ -1,0 +1,10 @@
+[Unit]
+Description=SubGame: daily Telegram report at 00:00 Tashkent
+
+[Timer]
+OnCalendar=*-*-* 00:00:00 Asia/Tashkent
+Persistent=true
+Unit=subgame-daily-report.service
+
+[Install]
+WantedBy=timers.target

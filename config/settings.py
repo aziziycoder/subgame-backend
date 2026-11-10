@@ -161,6 +161,10 @@ GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '542403988321-67fapm1qe6oqih3rv
 
 FIREBASE_PROJECT_ID = os.getenv('FIREBASE_PROJECT_ID', 'subgame-ca4ed')
 
+# Nightly Telegram report (manage.py send_daily_report). Set both in .env on the server.
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_REPORT_CHAT_ID = os.getenv('TELEGRAM_REPORT_CHAT_ID', '')
+
 ADMIN_EMAILS = [
     'azizbekgulomovweb@gmail.com',
     'imuz21029@gmail.com'

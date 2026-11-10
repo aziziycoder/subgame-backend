@@ -1,0 +1,10 @@
+[Unit]
+Description=SubGame: send yesterday's statistics to Telegram
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/www/subgame-backend
+# TELEGRAM_BOT_TOKEN and TELEGRAM_REPORT_CHAT_ID are read from /var/www/subgame-backend/.env
+ExecStart=/var/www/subgame-backend/venv/bin/python manage.py send_daily_report
