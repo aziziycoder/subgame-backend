@@ -12,9 +12,9 @@ DETAILS_CACHE_SECONDS = 24 * 60 * 60
 TIMEOUT_SECONDS = 6
 MAX_RESULTS = 10
 
-# Search reports soundtracks and tools as plain apps, so the obvious ones are dropped by name.
-# Voting re-checks the type through appdetails, which catches the rest.
-NOT_A_GAME = re.compile(r'soundtrack|\bost\b|art ?book|playtest|dedicated server|\bsdk\b|wallpaper', re.IGNORECASE)
+# Search reports soundtracks, demos and tools as plain apps, so the obvious ones are dropped by
+# name. Voting re-checks the type through appdetails, which catches the rest.
+NOT_A_GAME = re.compile(r'soundtrack|\bost\b|art ?book|playtest|\bdemo\b|dedicated server|\bsdk\b|wallpaper', re.IGNORECASE)
 STEAM_APP_URL = re.compile(r'store\.steampowered\.com/app/(\d+)', re.IGNORECASE)
 
 

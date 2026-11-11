@@ -49,13 +49,14 @@ class TranslationRequestTests(APITestCase):
         self.client.credentials(HTTP_AUTHORIZATION=bearer(user))
         return self.client.post(VOTE_URL, {'steamAppId': app_id}, format='json')
 
-    def test_search_marks_site_games_and_requests_and_drops_soundtracks(self):
+    def test_search_marks_site_games_and_requests_and_drops_soundtracks_and_demos(self):
         TranslationRequest.objects.create(steam_app_id=1030300, title='Hollow Knight: Silksong')
         payload = {'items': [
             {'type': 'app', 'id': 367520, 'name': 'Hollow Knight', 'tiny_image': 'hk.jpg'},
             {'type': 'app', 'id': 1030300, 'name': 'Hollow Knight: Silksong', 'tiny_image': 'ss.jpg'},
             {'type': 'app', 'id': 598190, 'name': 'Hollow Knight - Official Soundtrack', 'tiny_image': 'ost.jpg'},
             {'type': 'app', 'id': 111, 'name': 'Scarlet Hollow', 'tiny_image': 'sh.jpg'},
+            {'type': 'app', 'id': 112, 'name': 'Scarlet Hollow Demo', 'tiny_image': 'shd.jpg'},
         ]}
         with mock.patch(STEAM_GET, return_value=steam_response(payload)):
             response = self.client.get(SEARCH_URL, {'q': 'hollow'})
