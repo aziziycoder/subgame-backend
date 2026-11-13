@@ -208,7 +208,10 @@ class ClickWebhookView(views.APIView):
                 order.paid_amount = int(amount)
                 order.click_trans_id = click_trans_id
                 order.click_paydoc_id = click_paydoc_id
-                order.save(update_fields=['status', 'paid_amount', 'click_trans_id', 'click_paydoc_id', 'updated_at'])
+                order.paid_at = timezone.now()
+                order.save(update_fields=[
+                    'status', 'paid_amount', 'click_trans_id', 'click_paydoc_id', 'paid_at', 'updated_at',
+                ])
 
                 # Automatically grant or update license!
                 # Imported licenses may have another id format, and user+game is unique.

@@ -30,6 +30,9 @@ class Order(models.Model):
     # Click requires merchant_prepare_id and merchant_confirm_id to be integers.
     click_prepare_id = models.IntegerField(null=True, blank=True)
     paid_amount = models.IntegerField(default=0)
+    # When Click confirmed the payment. A retried checkout reuses its unpaid order, so
+    # created_at can be days earlier than the payment. Empty on orders imported from Firestore.
+    paid_at = models.DateTimeField(null=True, blank=True, db_index=True)
     error_note = models.TextField(blank=True, default='')
     
     created_at = models.DateTimeField(default=timezone.now)

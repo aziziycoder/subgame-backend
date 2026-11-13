@@ -44,6 +44,17 @@ class ClickWebhookTests(APITestCase):
         self.assertEqual(response.data['error'], 0)
         self.assertTrue(License.objects.filter(user=self.user, game=self.game, status='active').exists())
 
+    def test_payment_time_is_recorded_apart_from_when_the_checkout_opened(self):
+        from datetime import timedelta
+        from django.utils import timezone
+
+        # A checkout opened two days ago and paid now, as when someone comes back to pay.
+        Order.objects.filter(order_id=ORDER_ID).update(created_at=timezone.now() - timedelta(days=2))
+        self.assertEqual(self.post(complete_payload('15000')).data['error'], 0)
+        order = Order.objects.get(order_id=ORDER_ID)
+        self.assertIsNotNone(order.paid_at)
+        self.assertLess(timezone.now() - order.paid_at, timedelta(minutes=1))
+
     def test_sandbox_bypass_no_longer_skips_the_signature(self):
         response = self.post(complete_payload('15000', sign_string='sandbox_bypass'))
         self.assertEqual(response.data['error'], -1)

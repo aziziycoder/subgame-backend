@@ -13,7 +13,7 @@ from apps.issues.models import GameSuggestion, Issue, TranslationRequest, Transl
 from apps.licenses.models import License
 from apps.payments.models import Order
 
-from .dashboard import BOUND_Q, CLICK_PAID_Q, _manual_payments
+from .dashboard import BOUND_Q, CLICK_PAID_Q, _manual_payments, click_paid_orders
 from .models import User
 
 TELEGRAM_URL = 'https://api.telegram.org/bot{token}/sendMessage'
@@ -78,16 +78,16 @@ def collect(day):
         'totalBound': bound.filter(upto('bound_at')).count(),
     }
 
-    click = Order.objects.filter(CLICK_PAID_Q)
+    click = click_paid_orders()
     other_paid = Order.objects.filter(status='paid').exclude(CLICK_PAID_Q)
-    click_day = click.filter(in_day('created_at'))
+    click_day = click.filter(in_day('paid_on'))
     click_stats = click_day.aggregate(count=Count('pk'), amount=Sum('paid_amount'))
     click_stats['amount'] = click_stats['amount'] or 0
     click_stats['byGame'] = list(
         click_day.values('game_title').annotate(n=Count('pk'), amount=Sum('paid_amount')).order_by('-amount')
     )
-    click_stats['total'] = click.filter(upto('created_at')).aggregate(s=Sum('paid_amount'))['s'] or 0
-    click_stats['totalCount'] = click.filter(upto('created_at')).count()
+    click_stats['total'] = click.filter(upto('paid_on')).aggregate(s=Sum('paid_amount'))['s'] or 0
+    click_stats['totalCount'] = click.filter(upto('paid_on')).count()
     click_stats['pendingNew'] = Order.objects.filter(
         in_day('created_at'), status__in=['pending', 'prepared']
     ).count()

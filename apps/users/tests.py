@@ -214,6 +214,21 @@ class AdminDashboardStatsTests(APITestCase):
         self.assertEqual(sum(day['revenue'] for day in data['series']), 36000)
         self.assertTrue(data['activity'])
 
+    def test_click_money_is_dated_by_payment_not_by_checkout(self):
+        now = timezone.now()
+        before = self.client.get(DASHBOARD_URL).data
+        # Opened 20 days ago, paid today: it belongs to today, not to that old day.
+        Order.objects.create(order_id='retried-checkout', user=User.objects.get(id='olduid'),
+                             game=Game.objects.get(id='rdr'), user_email='old@example.com', game_title='RDR',
+                             game_slug='rdr', status='paid', click_trans_id='T9', paid_amount=15000,
+                             created_at=now - timedelta(days=20), paid_at=now)
+        after = self.client.get(DASHBOARD_URL).data
+        for window in ('today', 'last7'):
+            self.assertEqual(after['orders']['revenue'][window] - before['orders']['revenue'][window], 15000)
+        self.assertEqual(after['series'][-1]['clickRevenue'] - before['series'][-1]['clickRevenue'], 15000)
+        # Nothing landed on the day the checkout was opened.
+        self.assertEqual(after['series'][-21]['clickRevenue'], before['series'][-21]['clickRevenue'])
+
 
 class DailyReportTests(APITestCase):
     """manage.py send_daily_report: one Tashkent day, Telegram mocked."""
@@ -252,6 +267,7 @@ class DailyReportTests(APITestCase):
                              paid_amount=10000, created_at=before)
         Order.objects.create(order_id='late__stray', user=old, game=evil, user_email=old.email,
                              game_title='<Evil & Co>', game_slug='evil', status='pending', created_at=inside)
+        self.inside, self.before, self.after = inside, before, after
 
         req = TranslationRequest.objects.create(steam_app_id=1, title='Hades <II>', created_at=inside)
         TranslationVote.objects.create(request=req, user=fresh, created_at=inside)
@@ -281,6 +297,19 @@ class DailyReportTests(APITestCase):
         self.assertIn('1. Hades &lt;II&gt; — 2', text)
         self.assertIn('• Foydalanuvchilar: 2', text)  # the user created next day is not in the totals
         self.assertIn("Umumiy tushum: 45 000 so'm", text)
+
+    def test_payment_counts_on_the_day_it_was_paid(self):
+        old = User.objects.get(id='old')
+        evil = Game.objects.get(id='evil')
+        # Checkout opened the day before and paid on the report day; another opened that day, paid the next.
+        Order.objects.create(order_id='paid-today', user=old, game=evil, user_email=old.email,
+                             game_title='<Evil & Co>', game_slug='evil', status='paid', click_trans_id='T5',
+                             paid_amount=15000, created_at=self.before, paid_at=self.inside)
+        Order.objects.create(order_id='paid-tomorrow', user=old, game=Game.objects.get(id='stray'),
+                             user_email=old.email, game_title='Stray', game_slug='stray', status='paid',
+                             click_trans_id='T6', paid_amount=15000, created_at=self.inside, paid_at=self.after)
+        text = self.run_command('--dry-run')
+        self.assertIn("Click: <b>2</b> ta — 30 000 so'm", text)
 
     @override_settings(TELEGRAM_BOT_TOKEN='123:SECRET', TELEGRAM_REPORT_CHAT_ID='42')
     def test_sends_html_message_to_chat(self):
