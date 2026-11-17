@@ -67,7 +67,7 @@ class Game(models.Model):
 
     class Meta:
         db_table = 'subgame_games'
-        ordering = ['-release_year', 'title']
+        ordering = ['-created_at', 'title']
 
     def __str__(self):
         return f"{self.title} ({self.release_year})"

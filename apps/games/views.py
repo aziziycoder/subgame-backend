@@ -19,7 +19,7 @@ class GameListView(generics.ListAPIView):
     pagination_class = None  # Return all for catalog filtering or provide custom
 
     def get_queryset(self):
-        qs = Game.objects.all().order_by('-release_year', 'title')
+        qs = Game.objects.all().order_by('-created_at', 'title')
         genre = self.request.query_params.get('genre')
         search = self.request.query_params.get('search')
         status_filter = self.request.query_params.get('status')
