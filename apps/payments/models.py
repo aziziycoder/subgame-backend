@@ -19,6 +19,7 @@ class Order(models.Model):
     user_email = models.EmailField()
     game_title = models.CharField(max_length=255)
     game_slug = models.CharField(max_length=120)
+    edition = models.CharField(max_length=20, default='subtitle')
     
     amount = models.IntegerField(default=15000)
     currency = models.CharField(max_length=10, default='UZS')

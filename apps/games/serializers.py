@@ -25,6 +25,16 @@ class GameSerializer(serializers.ModelSerializer):
     subtitleDownloadUrl = serializers.CharField(source='subtitle_download_url', required=False, allow_blank=True)
     subtitlePrice = serializers.CharField(source='subtitle_price', required=False, allow_blank=True)
     subtitleTranslationType = serializers.CharField(source='subtitle_translation_type', required=False, allow_blank=True)
+    hasDubbing = serializers.BooleanField(source='has_dubbing', required=False)
+    dubbingStatus = serializers.CharField(source='dubbing_status', required=False, allow_blank=True)
+    dubbingLanguage = serializers.CharField(source='dubbing_language', required=False, allow_blank=True)
+    dubbingVersion = serializers.CharField(source='dubbing_version', required=False, allow_blank=True)
+    dubbingLastUpdated = serializers.CharField(source='dubbing_last_updated', required=False, allow_blank=True)
+    dubbingSize = serializers.CharField(source='dubbing_size', required=False, allow_blank=True)
+    dubbingDownloadUrl = serializers.CharField(source='dubbing_download_url', required=False, allow_blank=True)
+    dubbingPrice = serializers.CharField(source='dubbing_price', required=False, allow_blank=True)
+    dubbingType = serializers.CharField(source='dubbing_type', required=False, allow_blank=True)
+    dubbingFormat = serializers.CharField(source='dubbing_format', required=False, allow_blank=True)
     installationGuide = serializers.JSONField(source='installation_guide', required=False)
     knownIssues = serializers.JSONField(source='known_issues', required=False)
     minimumRequirements = serializers.JSONField(source='minimum_requirements', required=False)
@@ -48,7 +58,10 @@ class GameSerializer(serializers.ModelSerializer):
             'subtitleStatus', 'subtitleLanguage', 'subtitleVersion',
             'subtitleLastUpdated', 'subtitleCompatibility', 'subtitleFormat',
             'subtitleSize', 'subtitleDownloadUrl', 'subtitlePrice',
-            'subtitleTranslationType', 'installationGuide', 'knownIssues',
+            'subtitleTranslationType', 'hasDubbing', 'dubbingStatus',
+            'dubbingLanguage', 'dubbingVersion', 'dubbingLastUpdated',
+            'dubbingSize', 'dubbingDownloadUrl', 'dubbingPrice',
+            'dubbingType', 'dubbingFormat', 'installationGuide', 'knownIssues',
             'minimumRequirements', 'recommendedRequirements',
             'isFeatured', 'tags', 'defaultExeName', 'targetFileName',
             'targetRelativeDir', 'keyPrefix', 'createdAt', 'updatedAt'

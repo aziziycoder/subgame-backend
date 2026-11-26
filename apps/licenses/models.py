@@ -21,6 +21,7 @@ class License(models.Model):
     user_photo = models.TextField(blank=True, default='')
     game_title = models.CharField(max_length=255)
     game_slug = models.CharField(max_length=120, db_index=True)
+    edition = models.CharField(max_length=20, default='subtitle')
     
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
     
@@ -43,7 +44,7 @@ class License(models.Model):
     class Meta:
         db_table = 'subgame_licenses'
         ordering = ['-created_at']
-        unique_together = ('user', 'game')
+        unique_together = ('user', 'game', 'edition')
 
     def __str__(self):
         return f"{self.user.email} - {self.game.title} ({self.status})"

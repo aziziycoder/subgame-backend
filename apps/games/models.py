@@ -46,6 +46,18 @@ class Game(models.Model):
     subtitle_download_url = models.URLField(max_length=1000, blank=True, default='')
     subtitle_price = models.CharField(max_length=100, default='Bepul')
     subtitle_translation_type = models.CharField(max_length=255, blank=True, default='')
+
+    # Dubbing (Uzbek Voiceover) data
+    has_dubbing = models.BooleanField(default=False)
+    dubbing_status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Tayyor')
+    dubbing_language = models.CharField(max_length=50, default='O‘zbekcha (Lotin)')
+    dubbing_version = models.CharField(max_length=50, default='v1.0.0')
+    dubbing_last_updated = models.CharField(max_length=50, blank=True, default='')
+    dubbing_size = models.CharField(max_length=50, blank=True, default='')
+    dubbing_download_url = models.URLField(max_length=1000, blank=True, default='')
+    dubbing_price = models.CharField(max_length=100, default='Bepul')
+    dubbing_type = models.CharField(max_length=100, blank=True, default='')
+    dubbing_format = models.CharField(max_length=255, blank=True, default='')
     
     # Guides & Specs
     installation_guide = models.JSONField(default=list, blank=True)
@@ -76,6 +88,13 @@ class Game(models.Model):
     def is_paid(self):
         val = (self.subtitle_price or self.price or '').lower()
         if 'bepul' in val or 'tekin' in val or 'free' in val or 'tez kunda' in val:
+            return False
+        return True
+
+    @property
+    def is_dubbing_paid(self):
+        val = (self.dubbing_price or '').lower()
+        if not val or 'bepul' in val or 'tekin' in val or 'free' in val or 'tez kunda' in val:
             return False
         return True
 

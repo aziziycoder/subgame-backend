@@ -18,8 +18,15 @@ ORDER_ID_LENGTH = 20
 MAX_CLICK_INT = 2_147_483_647
 
 
-def click_price(game):
-    """Price in so'm with the same precedence as the site, or None when the game is free."""
+def click_price(game, edition='subtitle'):
+    """Price in so'm with the same precedence as the site, or None when free."""
+    if edition == 'dubbing':
+        val = game.dubbing_price or ''
+        digits = ''.join(c for c in val if c.isdigit())
+        if digits and int(digits) > 0:
+            return int(digits)
+        return 15000 if game.is_dubbing_paid else None
+
     for value in (game.subtitle_price, game.price):
         digits = ''.join(c for c in (value or '') if c.isdigit())
         if digits and int(digits) > 0:
@@ -36,26 +43,29 @@ class CreateOrderView(views.APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        game_id = request.data.get('gameId') or request.data.get('gameSlug')
+        raw_game_id = request.data.get('gameId') or request.data.get('gameSlug')
+        req_edition = request.data.get('edition')
+        edition = 'dubbing' if (req_edition == 'dubbing' or str(raw_game_id).endswith('__dub')) else 'subtitle'
+        lookup_id = str(raw_game_id)[:-5] if str(raw_game_id).endswith('__dub') else str(raw_game_id)
         target_user = request.user
 
-        game = Game.objects.filter(id=game_id).first() or Game.objects.filter(slug=game_id).first()
+        game = Game.objects.filter(id=lookup_id).first() or Game.objects.filter(slug=lookup_id).first()
         if not game:
             return Response({'error': 'O‘yin topilmadi.'}, status=status.HTTP_404_NOT_FOUND)
 
         if not settings.CLICK_SERVICE_ID or not settings.CLICK_MERCHANT_ID:
             return Response({'error': 'Click to‘lovi hozircha sozlanmagan.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-        if License.objects.filter(user=target_user, game=game, status='active').exists():
-            return Response({'error': 'Bu o‘yin uchun sizda faol litsenziya bor.'}, status=status.HTTP_409_CONFLICT)
+        if License.objects.filter(user=target_user, game=game, edition=edition, status='active').exists():
+            return Response({'error': 'Bu paket uchun sizda faol litsenziya bor.'}, status=status.HTTP_409_CONFLICT)
 
         # The price always comes from the game record, never from the client.
-        amount = click_price(game)
+        amount = click_price(game, edition=edition)
         if amount is None:
-            return Response({'error': 'Bu o‘yin bepul, to‘lov talab qilinmaydi.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Bu paket bepul, to‘lov talab qilinmaydi.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Retrying a checkout keeps its unpaid order. Orders in the old {user}__{slug} format are left alone.
-        existing_order = Order.objects.filter(user=target_user, game=game).exclude(status='paid').exclude(
+        existing_order = Order.objects.filter(user=target_user, game=game, edition=edition).exclude(status='paid').exclude(
             order_id__contains='__'
         ).order_by('-created_at').first()
         order_id = existing_order.order_id if existing_order else generate_order_id()
@@ -65,8 +75,9 @@ class CreateOrderView(views.APIView):
             defaults={
                 'user': target_user,
                 'game': game,
+                'edition': edition,
                 'user_email': target_user.email,
-                'game_title': game.title,
+                'game_title': f"{game.title} (Dublyaj)" if edition == 'dubbing' else game.title,
                 'game_slug': game.slug,
                 'amount': amount,
                 'currency': 'UZS',
@@ -214,25 +225,29 @@ class ClickWebhookView(views.APIView):
                 ])
 
                 # Automatically grant or update license!
-                # Imported licenses may have another id format, and user+game is unique.
-                existing_license = License.objects.filter(user=order.user, game=order.game).first()
-                license_id = existing_license.id if existing_license else f"{order.user.id}_{order.game.id}"
-                License.objects.update_or_create(
-                    id=license_id,
-                    defaults={
-                        'user': order.user,
-                        'game': order.game,
-                        'user_email': order.user.email,
-                        'user_name': order.user.display_name,
-                        'user_photo': order.user.photo_url,
-                        'game_title': order.game.title,
-                        'game_slug': order.game.slug,
-                        'status': 'active',
-                        'payment_provider': 'click',
-                        'payment_ref': click_trans_id,
-                        'paid_amount': int(amount),
-                    }
-                )
+                # If dubbing was purchased, also grant the subtitle license automatically.
+                editions_to_grant = ['dubbing', 'subtitle'] if getattr(order, 'edition', 'subtitle') == 'dubbing' else ['subtitle']
+                for ed in editions_to_grant:
+                    existing_license = License.objects.filter(user=order.user, game=order.game, edition=ed).first()
+                    default_id = f"{order.user.id}_{order.game.id}__dub" if ed == 'dubbing' else f"{order.user.id}_{order.game.id}"
+                    license_id = existing_license.id if existing_license else default_id
+                    License.objects.update_or_create(
+                        id=license_id,
+                        defaults={
+                            'user': order.user,
+                            'game': order.game,
+                            'edition': ed,
+                            'user_email': order.user.email,
+                            'user_name': order.user.display_name,
+                            'user_photo': order.user.photo_url,
+                            'game_title': f"{order.game.title} (Dublyaj)" if ed == 'dubbing' else order.game.title,
+                            'game_slug': order.game.slug,
+                            'status': 'active',
+                            'payment_provider': 'click',
+                            'payment_ref': click_trans_id,
+                            'paid_amount': int(amount) if ed == getattr(order, 'edition', 'subtitle') else 0,
+                        }
+                    )
 
             return Response({
                 'click_trans_id': int(click_trans_id) if click_trans_id.isdigit() else click_trans_id,

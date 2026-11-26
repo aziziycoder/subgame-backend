@@ -7,9 +7,9 @@ class LicenseSerializer(serializers.ModelSerializer):
     userEmail = serializers.CharField(source='user_email', read_only=True)
     userName = serializers.CharField(source='user_name', read_only=True)
     userPhoto = serializers.CharField(source='user_photo', read_only=True)
-    gameId = serializers.CharField(source='game_id', read_only=True)
+    gameId = serializers.SerializerMethodField()
     gameTitle = serializers.CharField(source='game_title', read_only=True)
-    gameSlug = serializers.CharField(source='game_slug', read_only=True)
+    gameSlug = serializers.SerializerMethodField()
     boundAt = serializers.DateTimeField(source='bound_at', read_only=True)
     boundDeviceName = serializers.CharField(source='bound_device_name', read_only=True)
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
@@ -21,11 +21,17 @@ class LicenseSerializer(serializers.ModelSerializer):
     adminNote = serializers.CharField(source='admin_note', read_only=True)
     grantedBy = serializers.CharField(source='granted_by', read_only=True)
 
+    def get_gameId(self, obj):
+        return f"{obj.game_id}__dub" if getattr(obj, 'edition', 'subtitle') == 'dubbing' else obj.game_id
+
+    def get_gameSlug(self, obj):
+        return f"{obj.game_slug}__dub" if getattr(obj, 'edition', 'subtitle') == 'dubbing' else obj.game_slug
+
     class Meta:
         model = License
         fields = [
             'id', 'userId', 'userEmail', 'userName', 'userPhoto',
-            'gameId', 'gameTitle', 'gameSlug', 'status', 'hwid',
+            'gameId', 'gameTitle', 'gameSlug', 'edition', 'status', 'hwid',
             'boundAt', 'boundDeviceName', 'payment_provider',
             'paid_amount', 'created_at', 'createdAt', 'updatedAt',
             'paymentProvider', 'paymentRef', 'paidAmount', 'revokedReason',

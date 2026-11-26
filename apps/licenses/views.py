@@ -33,31 +33,39 @@ class ClaimFreeLicenseView(views.APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        game_id = request.data.get('gameId') or request.data.get('gameSlug')
-        if not game_id:
+        raw_game_id = request.data.get('gameId') or request.data.get('gameSlug')
+        if not raw_game_id:
             return Response({'error': 'gameId kiritilmadi.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        game = Game.objects.filter(id=game_id).first() or Game.objects.filter(slug=game_id).first()
+        edition = 'dubbing' if str(raw_game_id).endswith('__dub') else 'subtitle'
+        lookup_id = str(raw_game_id)[:-5] if edition == 'dubbing' else str(raw_game_id)
+
+        game = Game.objects.filter(id=lookup_id).first() or Game.objects.filter(slug=lookup_id).first()
         if not game:
             return Response({'error': 'O‘yin topilmadi.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # SECURITY: Strictly block claiming paid games for non-admins!
-        if game.is_paid and not request.user.is_admin:
+        if edition == 'dubbing' and not game.has_dubbing:
+            return Response({'error': 'Ushbu o‘yin uchun dublyaj mavjud emas.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # SECURITY: Strictly block claiming paid games/editions for non-admins!
+        is_edition_paid = game.is_dubbing_paid if edition == 'dubbing' else game.is_paid
+        if is_edition_paid and not request.user.is_admin:
             return Response(
-                {'error': 'Ushbu o‘yin pullik. Litsenziya faqat to‘lov muvaffaqiyatli amalga oshirilganda avtomatik beriladi.'},
+                {'error': 'Ushbu paket pullik. Litsenziya faqat to‘lov muvaffaqiyatli amalga oshirilganda avtomatik beriladi.'},
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        license_id = f"{request.user.id}_{game.id}"
+        license_id = f"{request.user.id}_{game.id}__dub" if edition == 'dubbing' else f"{request.user.id}_{game.id}"
         license_obj, created = License.objects.get_or_create(
             id=license_id,
             defaults={
                 'user': request.user,
                 'game': game,
+                'edition': edition,
                 'user_email': request.user.email,
                 'user_name': request.user.display_name,
                 'user_photo': request.user.photo_url,
-                'game_title': game.title,
+                'game_title': f"{game.title} (Dublyaj)" if edition == 'dubbing' else game.title,
                 'game_slug': game.slug,
                 'status': 'active',
                 'payment_provider': 'free',
