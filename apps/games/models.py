@@ -99,6 +99,30 @@ class Game(models.Model):
         return True
 
 
+class SubtitleVariant(models.Model):
+    game = models.ForeignKey(Game, related_name='variants', on_delete=models.CASCADE)
+    key = models.CharField(max_length=50)
+    label = models.CharField(max_length=120)
+    subtitle_version = models.CharField(max_length=50, default='v1.0.0')
+    subtitle_size = models.CharField(max_length=50, blank=True, default='')
+    subtitle_download_url = models.URLField(max_length=1000, blank=True, default='')
+    target_file_name = models.CharField(max_length=255, blank=True, default='')
+    target_relative_dir = models.CharField(max_length=255, blank=True, default='')
+    default_exe_name = models.CharField(max_length=255, blank=True, default='')
+    sort_order = models.IntegerField(default=0)
+    detect_files_present = models.JSONField(default=list, blank=True)
+    detect_files_absent = models.JSONField(default=list, blank=True)
+    detect_file_sizes = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = 'subgame_subtitle_variants'
+        ordering = ['sort_order', 'id']
+        unique_together = [('game', 'key')]
+
+    def __str__(self):
+        return f"{self.game_id} - {self.label} ({self.key})"
+
+
 class Slider(models.Model):
     id = models.CharField(max_length=100, primary_key=True)
     slug = models.SlugField(max_length=120, unique=True)

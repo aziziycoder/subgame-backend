@@ -1,5 +1,28 @@
 from rest_framework import serializers
-from .models import Game, Slider
+from .models import Game, Slider, SubtitleVariant
+
+
+class SubtitleVariantSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
+    subtitleVersion = serializers.CharField(source='subtitle_version', required=False, allow_blank=True, default='v1.0.0')
+    subtitleSize = serializers.CharField(source='subtitle_size', required=False, allow_blank=True, default='')
+    subtitleDownloadUrl = serializers.CharField(source='subtitle_download_url', max_length=1000, required=False, allow_blank=True, default='')
+    targetFileName = serializers.CharField(source='target_file_name', required=False, allow_blank=True, default='')
+    targetRelativeDir = serializers.CharField(source='target_relative_dir', required=False, allow_blank=True, default='')
+    defaultExeName = serializers.CharField(source='default_exe_name', required=False, allow_blank=True, default='')
+    sortOrder = serializers.IntegerField(source='sort_order', required=False, default=0)
+    detectFilesPresent = serializers.JSONField(source='detect_files_present', required=False, default=list)
+    detectFilesAbsent = serializers.JSONField(source='detect_files_absent', required=False, default=list)
+    detectFileSizes = serializers.JSONField(source='detect_file_sizes', required=False, default=dict)
+
+    class Meta:
+        model = SubtitleVariant
+        fields = [
+            'id', 'key', 'label', 'subtitleVersion', 'subtitleSize',
+            'subtitleDownloadUrl', 'targetFileName', 'targetRelativeDir',
+            'defaultExeName', 'sortOrder', 'detectFilesPresent',
+            'detectFilesAbsent', 'detectFileSizes'
+        ]
 
 
 class GameSerializer(serializers.ModelSerializer):
@@ -44,6 +67,7 @@ class GameSerializer(serializers.ModelSerializer):
     targetFileName = serializers.CharField(source='target_file_name', required=False, allow_blank=True)
     targetRelativeDir = serializers.CharField(source='target_relative_dir', required=False, allow_blank=True)
     keyPrefix = serializers.CharField(source='key_prefix', required=False, allow_blank=True)
+    variants = SubtitleVariantSerializer(many=True, required=False)
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
     updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
 
@@ -64,14 +88,42 @@ class GameSerializer(serializers.ModelSerializer):
             'dubbingType', 'dubbingFormat', 'installationGuide', 'knownIssues',
             'minimumRequirements', 'recommendedRequirements',
             'isFeatured', 'tags', 'defaultExeName', 'targetFileName',
-            'targetRelativeDir', 'keyPrefix', 'createdAt', 'updatedAt'
+            'targetRelativeDir', 'keyPrefix', 'variants', 'createdAt', 'updatedAt'
         ]
         extra_kwargs = {'price': {'required': False, 'allow_blank': True}}
+
+    def _sync_variants(self, game, variants_data):
+        keep_keys = []
+        for idx, item in enumerate(variants_data):
+            data = dict(item)
+            data.pop('id', None)
+            key = (data.get('key') or f'variant-{idx + 1}').strip().lower()
+            data['key'] = key
+            if 'sort_order' not in data:
+                data['sort_order'] = idx
+            SubtitleVariant.objects.update_or_create(
+                game=game,
+                key=key,
+                defaults=data,
+            )
+            keep_keys.append(key)
+        game.variants.exclude(key__in=keep_keys).delete()
+
+    def create(self, validated_data):
+        variants_data = validated_data.pop('variants', None)
+        game = super().create(validated_data)
+        if variants_data is not None:
+            self._sync_variants(game, variants_data)
+        return game
 
     def update(self, instance, validated_data):
         # Primary keys are immutable; saving a changed id would duplicate the row.
         validated_data.pop('id', None)
-        return super().update(instance, validated_data)
+        variants_data = validated_data.pop('variants', None)
+        game = super().update(instance, validated_data)
+        if variants_data is not None:
+            self._sync_variants(game, variants_data)
+        return game
 
 
 class SliderSerializer(serializers.ModelSerializer):

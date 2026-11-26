@@ -19,7 +19,7 @@ class GameListView(generics.ListAPIView):
     pagination_class = None  # Return all for catalog filtering or provide custom
 
     def get_queryset(self):
-        qs = Game.objects.all().order_by('-created_at', 'title')
+        qs = Game.objects.prefetch_related('variants').all().order_by('-created_at', 'title')
         genre = self.request.query_params.get('genre')
         search = self.request.query_params.get('search')
         status_filter = self.request.query_params.get('status')
@@ -44,7 +44,7 @@ class GameDetailView(generics.RetrieveAPIView):
 
     def get_object(self):
         slug_or_id = self.kwargs['slug']
-        return Game.objects.filter(Q(slug=slug_or_id) | Q(id=slug_or_id)).first()
+        return Game.objects.prefetch_related('variants').filter(Q(slug=slug_or_id) | Q(id=slug_or_id)).first()
 
 
 class SliderListView(generics.ListAPIView):
